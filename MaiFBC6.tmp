@@ -1,0 +1,19 @@
+[gd_scene load_steps=3 format=3 uid="uid://by5g6q6qfud3e"]
+
+[ext_resource type="Script" path="res://Main.gd" id="1_vh5r1"]
+[ext_resource type="PackedScene" uid="uid://c6s3hrnvu5oc7" path="res://factory.tscn" id="2_5pusg"]
+
+[node name="Node" type="Node"]
+script = ExtResource("1_vh5r1")
+factory = ExtResource("2_5pusg")
+
+[node name="Label" type="Label" parent="."]
+offset_right = 40.0
+offset_bottom = 23.0
+text = "Objective: 2 wood"
+
+[node name="Timer" type="Timer" parent="."]
+autostart = true
+
+[connection signal="child_entered_tree" from="." to="." method="_on_child_entered_tree"]
+[connection signal="timeout" from="Timer" to="." method="_on_timer_timeout"]
