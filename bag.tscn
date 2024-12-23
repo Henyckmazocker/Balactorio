@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://cri62dyustdb5"]
+
+[ext_resource type="Script" path="res://Bag.gd" id="1_qwpax"]
+
+[node name="Bag" type="Node"]
+script = ExtResource("1_qwpax")

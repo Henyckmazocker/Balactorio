@@ -5,15 +5,17 @@ var wood = 0;
 var timer;
 
 @export var factory: PackedScene
+@export var player: PackedScene
 
 # Called when the node enters the scene tree for the first time.
 func _ready():
 	timer = 0.0;
-
-
+	var player = player.instantiate()
+	add_child(player)
+	
 # Called every frame. 'delta' is the elapsed time since the previous frame.
 func _process(delta):
-	get_node("Label").text = str(wood)
+	get_node("Label").text = str(get_node("Player").get_node("Bag").bag.wood)
 
 func _input(event):
 	if event is InputEventMouseButton:
@@ -28,9 +30,7 @@ func _input(event):
 
 func _on_timer_timeout():
 	for x in factoryArray:
-		match x.type:
-			"woodCutter":
-				wood += 1
-			
+		get_node("Player").get_node("Bag").addToBag(x.type, 1)
+
 func factoryCreated(node):
 	factoryArray.append(node);
