@@ -9,13 +9,19 @@ script = ExtResource("1_vh5r1")
 factory = ExtResource("2_5pusg")
 player = ExtResource("3_5rp15")
 
-[node name="Label" type="Label" parent="."]
+[node name="Objective" type="Label" parent="."]
 offset_right = 40.0
 offset_bottom = 23.0
 text = "Objective: 2 wood"
 
 [node name="Timer" type="Timer" parent="."]
 autostart = true
+
+[node name="Label" type="Label" parent="."]
+offset_left = -2.0
+offset_top = 29.0
+offset_right = 38.0
+offset_bottom = 52.0
 
 [connection signal="child_entered_tree" from="." to="." method="_on_child_entered_tree"]
 [connection signal="timeout" from="Timer" to="." method="_on_timer_timeout"]

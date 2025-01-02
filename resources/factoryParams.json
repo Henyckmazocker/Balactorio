@@ -1,0 +1,20 @@
+{
+	"Factories": {
+		"WoodCutter":
+			{
+				"material": "wood",
+				"tick": 2,
+				"recieveFrom": null,
+				"deliverTo": 
+					["WoodProcessing"]
+			},
+		"WoodProcessing":
+			{
+				"material": "plank",
+				"tick": 1,
+				"recieveFrom": 
+					["WoodCutter"],
+				"deliverTo": null
+			}
+		}
+}
