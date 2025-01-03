@@ -16,5 +16,5 @@ func _process(delta):
 	
 func addToBag(type, cuantity):
 	match type:
-		"wood":
+		"WoodCutter":
 			bag.wood.cuantity += cuantity

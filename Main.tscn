@@ -1,13 +1,15 @@
-[gd_scene load_steps=4 format=3 uid="uid://by5g6q6qfud3e"]
+[gd_scene load_steps=5 format=3 uid="uid://by5g6q6qfud3e"]
 
 [ext_resource type="Script" path="res://Main.gd" id="1_vh5r1"]
 [ext_resource type="PackedScene" uid="uid://c6s3hrnvu5oc7" path="res://factory.tscn" id="2_5pusg"]
 [ext_resource type="PackedScene" uid="uid://c43x5s4fiqvuh" path="res://player.tscn" id="3_5rp15"]
+[ext_resource type="PackedScene" uid="uid://b4wk0cj8ik5ab" path="res://inventory.tscn" id="4_0bxff"]
 
 [node name="Node" type="Node"]
 script = ExtResource("1_vh5r1")
 factory = ExtResource("2_5pusg")
 player = ExtResource("3_5rp15")
+inventory = ExtResource("4_0bxff")
 
 [node name="Objective" type="Label" parent="."]
 offset_right = 40.0

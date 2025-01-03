@@ -1,0 +1,29 @@
+[gd_scene load_steps=5 format=3 uid="uid://ljsp56ff27po"]
+
+[ext_resource type="Script" path="res://factoryData.gd" id="1_8taem"]
+[ext_resource type="Texture2D" uid="uid://c5r46khx00xwx" path="res://resources/factorysample.webp" id="2_4irf6"]
+
+[sub_resource type="SpriteFrames" id="SpriteFrames_qlmer"]
+animations = [{
+"frames": [{
+"duration": 1.0,
+"texture": ExtResource("2_4irf6")
+}],
+"loop": true,
+"name": &"default",
+"speed": 5.0
+}]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_u32xt"]
+size = Vector2(1000, 1000)
+
+[node name="Factory" type="Area2D"]
+scale = Vector2(0.1, 0.1)
+script = ExtResource("1_8taem")
+metadata/_edit_group_ = true
+
+[node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
+sprite_frames = SubResource("SpriteFrames_qlmer")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_u32xt")

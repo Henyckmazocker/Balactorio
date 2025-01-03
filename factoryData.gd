@@ -1,15 +1,11 @@
 extends Area2D
 
-var tickTimer;
 var type;
-var deliversTo;
-var recievesFrom;
 
 func _ready():
 	pass
 	
-func initialize(name, tick):
-	tickTimer = tick;
+func initialize(name):
 	type = name;
 
 # Called every frame. 'delta' is the elapsed time since the previous frame.

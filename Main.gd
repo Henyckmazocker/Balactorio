@@ -8,6 +8,7 @@ var fileData;
 
 @export var factory: PackedScene
 @export var player: PackedScene
+@export var inventory: PackedScene
 
 # Called when the node enters the scene tree for the first time.
 func _ready():
@@ -15,6 +16,12 @@ func _ready():
 	add_child(player)
 	var json_as_text = FileAccess.get_file_as_string(file)
 	fileData = JSON.parse_string(json_as_text)
+	initiateInventory(player)
+	
+func initiateInventory(player):
+	var inventario = inventory.instantiate()
+	inventario.initialize(player.availableFactories);
+	add_child(inventario)
 	
 # Called every frame. 'delta' is the elapsed time since the previous frame.
 func _process(delta):
@@ -27,10 +34,10 @@ func _input(event):
 				get_node("Player").selectedFactory = get_node("Player").availableFactories[0]
 			var selectedFactoryParams = fileData.Factories[get_node("Player").selectedFactory]
 			var fabrica = factory.instantiate()
-			fabrica.initialize(selectedFactoryParams.material, selectedFactoryParams.tick);
+			fabrica.initialize(get_node("Player").selectedFactory, selectedFactoryParams.tick);
 			fabrica.position = event.position
 			add_child(fabrica)
-			factoryCreated(fabrica);
+			factoryCreated(fabrica)
 
 func _on_timer_timeout():
 	timer += 1;
@@ -39,4 +46,4 @@ func _on_timer_timeout():
 			get_node("Player").get_node("Bag").addToBag(x.type, 1)
 
 func factoryCreated(node):
-	factoryArray.append(node);
+	factoryArray.append(node)
