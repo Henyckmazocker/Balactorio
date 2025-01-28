@@ -2,8 +2,8 @@ extends Node
 
 var bag = {
 	"wood" : {
-		 "cuantity": 0
-	 }    
+		 "quantity": 0
+	 }
 }
 # Called when the node enters the scene tree for the first time.
 func _ready():
@@ -14,7 +14,5 @@ func _ready():
 func _process(delta):
 	pass
 	
-func addToBag(type, cuantity):
-	match type:
-		"WoodCutter":
-			bag.wood.cuantity += cuantity
+func addToBag(type, quantity):
+	bag[type].quantity += quantity

@@ -4,7 +4,7 @@
 			{
 				"material": "wood",
 				"tick": 2,
-				"recieveFrom": null,
+				"recieve": null,
 				"deliverTo": 
 					["WoodProcessing"]
 			},
@@ -12,8 +12,8 @@
 			{
 				"material": "plank",
 				"tick": 1,
-				"recieveFrom": 
-					["WoodCutter"],
+				"recieve": 
+					["wood"],
 				"deliverTo": null
 			}
 		}

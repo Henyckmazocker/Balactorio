@@ -20,7 +20,7 @@ func _ready():
 	
 func initiateInventory(player):
 	var inventario = inventory.instantiate()
-	inventario.initialize(player.availableFactories);
+	inventario.initialize(player.availableFactories, fileData);
 	add_child(inventario)
 	
 # Called every frame. 'delta' is the elapsed time since the previous frame.
@@ -34,16 +34,21 @@ func _input(event):
 				get_node("Player").selectedFactory = get_node("Player").availableFactories[0]
 			var selectedFactoryParams = fileData.Factories[get_node("Player").selectedFactory]
 			var fabrica = factory.instantiate()
-			fabrica.initialize(get_node("Player").selectedFactory, selectedFactoryParams.tick);
+			fabrica.initialize(
+				get_node("Player").selectedFactory, 
+				selectedFactoryParams.tick, 
+				selectedFactoryParams.recieve,
+				selectedFactoryParams.material
+				)
 			fabrica.position = event.position
 			add_child(fabrica)
 			factoryCreated(fabrica)
 
 func _on_timer_timeout():
-	timer += 1;
+	timer += 1
 	for x in factoryArray:
 		if int(timer) % int(x.tickTimer) == 0:
-			get_node("Player").get_node("Bag").addToBag(x.type, 1)
+			x.update(get_node("Player").get_node("Bag"))
 
 func factoryCreated(node):
 	factoryArray.append(node)

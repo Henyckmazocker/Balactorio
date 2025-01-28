@@ -4,10 +4,14 @@
 [ext_resource type="Script" path="res://inventory.gd" id="1_aryjl"]
 [ext_resource type="PackedScene" uid="uid://ljsp56ff27po" path="res://factoryTemplate.tscn" id="2_1f0dv"]
 
-[node name="Node2D" type="Node2D"]
+[node name="Node2D" type="Node2D" node_paths=PackedStringArray("inventoryPosition")]
 position = Vector2(956, 526)
 script = ExtResource("1_aryjl")
 factoryTemplate = ExtResource("2_1f0dv")
+inventoryPosition = NodePath("Sprite2D/Node2D")
 
 [node name="Sprite2D" type="Sprite2D" parent="."]
 texture = ExtResource("1_863tq")
+
+[node name="Node2D" type="Node2D" parent="Sprite2D"]
+position = Vector2(-800, 440)
