@@ -2,6 +2,7 @@ extends Node
 
 var bag = {
 	"wood" : {
+		 "level": 1,
 		 "quantity": 0
 	 }
 }
