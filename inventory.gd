@@ -21,6 +21,8 @@ func initialize(availableFactories, fileData):
 			inventoryFactory.material
 			)
 		factory.position = inventoryPosition.position
+		factory.scale.x = scale.x
+		factory.scale.y = scale.y
 		add_child(factory)
 
 # Called every frame. 'delta' is the elapsed time since the previous frame.

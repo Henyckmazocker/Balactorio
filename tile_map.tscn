@@ -1,0 +1,39 @@
+[gd_scene load_steps=8 format=3 uid="uid://8nf15eldv2g2"]
+
+[ext_resource type="Texture2D" uid="uid://b3y0y3pia3avh" path="res://resources/e6c6Xzg.png" id="1_wli08"]
+[ext_resource type="Material" uid="uid://d123q85avriaq" path="res://highligh.tres" id="2_5nw6i"]
+[ext_resource type="Texture2D" uid="uid://exn1fng6ipt3" path="res://resources/ground.png" id="2_y7nrm"]
+[ext_resource type="Script" path="res://tileMap.gd" id="4_0mobt"]
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_f4us6"]
+texture = ExtResource("1_wli08")
+texture_region_size = Vector2i(64, 64)
+0:0/0 = 0
+0:0/0/material = ExtResource("2_5nw6i")
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_l3djf"]
+texture = ExtResource("2_y7nrm")
+texture_region_size = Vector2i(64, 64)
+0:0/0 = 0
+
+[sub_resource type="TileSet" id="TileSet_via0e"]
+tile_shape = 1
+tile_layout = 5
+tile_offset_axis = 1
+tile_size = Vector2i(64, 32)
+sources/0 = SubResource("TileSetAtlasSource_f4us6")
+sources/1 = SubResource("TileSetAtlasSource_l3djf")
+
+[node name="TileMap" type="TileMap"]
+y_sort_enabled = true
+scale = Vector2(1.038, 1)
+tile_set = SubResource("TileSet_via0e")
+format = 2
+layer_0/name = "suelo"
+layer_0/y_sort_enabled = true
+layer_0/tile_data = PackedInt32Array(-65520, 1, 0, 16, 1, 0, 65552, 1, 0, 131088, 1, 0, 196624, 1, 0, -65519, 1, 0, 196625, 1, 0, -65518, 1, 0, 65554, 1, 0, 196626, 1, 0, -65517, 1, 0, 196627, 1, 0, -65516, 1, 0, 20, 1, 0, 65556, 1, 0, 131092, 1, 0, 196628, 1, 0, 21, 1, 0)
+layer_1/name = "highlight"
+layer_1/y_sort_enabled = true
+layer_1/z_index = 1
+layer_1/tile_data = PackedInt32Array()
+script = ExtResource("4_0mobt")

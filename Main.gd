@@ -9,11 +9,14 @@ var fileData;
 @export var factory: PackedScene
 @export var player: PackedScene
 @export var inventory: PackedScene
+@export var grid: PackedScene
 
 # Called when the node enters the scene tree for the first time.
 func _ready():
 	var player = player.instantiate()
 	add_child(player)
+	var playGrid = grid.instantiate()
+	add_child(playGrid)
 	var json_as_text = FileAccess.get_file_as_string(file)
 	fileData = JSON.parse_string(json_as_text)
 	initiateInventory(player)

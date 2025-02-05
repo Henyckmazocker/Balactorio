@@ -1,29 +1,36 @@
-[gd_scene load_steps=5 format=3 uid="uid://by5g6q6qfud3e"]
+[gd_scene load_steps=6 format=3 uid="uid://by5g6q6qfud3e"]
 
 [ext_resource type="Script" path="res://Main.gd" id="1_vh5r1"]
 [ext_resource type="PackedScene" uid="uid://c6s3hrnvu5oc7" path="res://factory.tscn" id="2_5pusg"]
 [ext_resource type="PackedScene" uid="uid://c43x5s4fiqvuh" path="res://player.tscn" id="3_5rp15"]
 [ext_resource type="PackedScene" uid="uid://b4wk0cj8ik5ab" path="res://inventory.tscn" id="4_0bxff"]
+[ext_resource type="PackedScene" uid="uid://8nf15eldv2g2" path="res://tile_map.tscn" id="5_nejv1"]
 
 [node name="Node" type="Node"]
 script = ExtResource("1_vh5r1")
 factory = ExtResource("2_5pusg")
 player = ExtResource("3_5rp15")
 inventory = ExtResource("4_0bxff")
+grid = ExtResource("5_nejv1")
 
 [node name="Objective" type="Label" parent="."]
-offset_right = 40.0
-offset_bottom = 23.0
+offset_left = 34.0
+offset_top = 44.0
+offset_right = 172.0
+offset_bottom = 67.0
 text = "Objective: 2 wood"
 
 [node name="Timer" type="Timer" parent="."]
 autostart = true
 
 [node name="Label" type="Label" parent="."]
-offset_left = -2.0
-offset_top = 29.0
-offset_right = 38.0
-offset_bottom = 52.0
+offset_left = 32.0
+offset_top = 73.0
+offset_right = 72.0
+offset_bottom = 96.0
+
+[node name="Camera2D" type="Camera2D" parent="."]
+position = Vector2(577, 326)
 
 [connection signal="child_entered_tree" from="." to="." method="_on_child_entered_tree"]
 [connection signal="timeout" from="Timer" to="." method="_on_timer_timeout"]
