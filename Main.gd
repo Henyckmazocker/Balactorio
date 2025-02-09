@@ -31,8 +31,10 @@ func _process(delta):
 	get_node("Label").text = str(get_node("Player").get_node("Bag").bag.wood)
 
 func _input(event):
+	var mouse_pos = get_node("TileMap").get_local_mouse_position()
+	var cell = get_node("TileMap").local_to_map(mouse_pos)
 	if event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed and get_node("TileMap").get_cell_source_id(0, cell) != -1:
 			if(get_node("Player").selectedFactory == null):
 				get_node("Player").selectedFactory = get_node("Player").availableFactories[0]
 			var selectedFactoryParams = fileData.Factories[get_node("Player").selectedFactory]
@@ -43,7 +45,12 @@ func _input(event):
 				selectedFactoryParams.recieve,
 				selectedFactoryParams.material
 				)
-			fabrica.position = event.position
+				
+			var tile_center = get_node("TileMap").map_to_local(cell)
+			var tile_size = get_node("TileMap").tile_set.tile_size
+			tile_center.y -= tile_size.y / 4
+			tile_center.x += tile_size.x / 4
+			fabrica.global_position = tile_center
 			add_child(fabrica)
 			factoryCreated(fabrica)
 

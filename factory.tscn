@@ -1,13 +1,13 @@
 [gd_scene load_steps=5 format=3 uid="uid://c6s3hrnvu5oc7"]
 
-[ext_resource type="Texture2D" uid="uid://c5r46khx00xwx" path="res://resources/factorysample.webp" id="1_5lpmx"]
 [ext_resource type="Script" path="res://factoryData.gd" id="1_e6wqb"]
+[ext_resource type="Texture2D" uid="uid://whatcnelhdo1" path="res://resources/factory.png" id="2_rlsjt"]
 
 [sub_resource type="SpriteFrames" id="SpriteFrames_qlmer"]
 animations = [{
 "frames": [{
 "duration": 1.0,
-"texture": ExtResource("1_5lpmx")
+"texture": ExtResource("2_rlsjt")
 }],
 "loop": true,
 "name": &"default",
@@ -18,7 +18,6 @@ animations = [{
 size = Vector2(1000, 1000)
 
 [node name="Factory" type="Area2D"]
-scale = Vector2(0.1, 0.1)
 script = ExtResource("1_e6wqb")
 metadata/_edit_group_ = true
 
