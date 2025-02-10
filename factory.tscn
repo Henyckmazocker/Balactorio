@@ -1,28 +1,67 @@
-[gd_scene load_steps=5 format=3 uid="uid://c6s3hrnvu5oc7"]
+[gd_scene load_steps=10 format=3 uid="uid://c6s3hrnvu5oc7"]
 
 [ext_resource type="Script" path="res://factoryData.gd" id="1_e6wqb"]
 [ext_resource type="Texture2D" uid="uid://whatcnelhdo1" path="res://resources/factory.png" id="2_rlsjt"]
 
-[sub_resource type="SpriteFrames" id="SpriteFrames_qlmer"]
-animations = [{
-"frames": [{
-"duration": 1.0,
-"texture": ExtResource("2_rlsjt")
-}],
-"loop": true,
-"name": &"default",
-"speed": 5.0
-}]
-
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_u32xt"]
 size = Vector2(1000, 1000)
 
+[sub_resource type="AtlasTexture" id="AtlasTexture_r4dpb"]
+atlas = ExtResource("2_rlsjt")
+region = Rect2(0, 0, 64, 64)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_bldw6"]
+atlas = ExtResource("2_rlsjt")
+region = Rect2(64, 0, 64, 64)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_cxgqv"]
+atlas = ExtResource("2_rlsjt")
+region = Rect2(128, 0, 64, 64)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_s6t70"]
+atlas = ExtResource("2_rlsjt")
+region = Rect2(192, 0, 64, 64)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_1uyy4"]
+atlas = ExtResource("2_rlsjt")
+region = Rect2(256, 0, 64, 64)
+
+[sub_resource type="SpriteFrames" id="SpriteFrames_c4tpn"]
+animations = [{
+"frames": [{
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_r4dpb")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_bldw6")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_cxgqv")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_s6t70")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_1uyy4")
+}],
+"loop": false,
+"name": &"factoryGenerate",
+"speed": 10.0
+}]
+
 [node name="Factory" type="Area2D"]
 script = ExtResource("1_e6wqb")
-metadata/_edit_group_ = true
-
-[node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
-sprite_frames = SubResource("SpriteFrames_qlmer")
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
 shape = SubResource("RectangleShape2D_u32xt")
+
+[node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
+sprite_frames = SubResource("SpriteFrames_c4tpn")
+animation = &"factoryGenerate"
+frame = 4
+frame_progress = 1.0
+
+[node name="Timer" type="Timer" parent="."]
+autostart = true
+
+[connection signal="timeout" from="Timer" to="." method="_on_timer_timeout"]

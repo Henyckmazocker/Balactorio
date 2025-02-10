@@ -4,6 +4,7 @@ var type;
 var production;
 var tickTimer;
 var itemNeeded = [];
+var timer = 0;
 
 func _ready():
 	pass
@@ -19,6 +20,7 @@ func initialize(name, tick, itemNeeded, material):
 func update(bag):
 	if checkNeeds(bag):
 		bag.addToBag(production, 1)
+		get_node("AnimatedSprite2D").play()
 
 func checkNeeds(bag):
 	for x in itemNeeded:
@@ -28,6 +30,7 @@ func checkNeeds(bag):
 			return false
 	return true
 
-# Called every frame. 'delta' is the elapsed time since the previous frame.
-func _process(delta):
-	pass
+func _on_timer_timeout():
+	timer += 1
+	if int(timer) % int(tickTimer) == 0:
+		update(get_parent().get_node("Player").get_node("Bag"))

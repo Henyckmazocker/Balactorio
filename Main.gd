@@ -54,11 +54,5 @@ func _input(event):
 			add_child(fabrica)
 			factoryCreated(fabrica)
 
-func _on_timer_timeout():
-	timer += 1
-	for x in factoryArray:
-		if int(timer) % int(x.tickTimer) == 0:
-			x.update(get_node("Player").get_node("Bag"))
-
 func factoryCreated(node):
 	factoryArray.append(node)

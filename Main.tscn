@@ -20,9 +20,6 @@ offset_right = 172.0
 offset_bottom = 67.0
 text = "Objective: 2 wood"
 
-[node name="Timer" type="Timer" parent="."]
-autostart = true
-
 [node name="Label" type="Label" parent="."]
 offset_left = 32.0
 offset_top = 73.0
@@ -33,4 +30,3 @@ offset_bottom = 96.0
 position = Vector2(577, 326)
 
 [connection signal="child_entered_tree" from="." to="." method="_on_child_entered_tree"]
-[connection signal="timeout" from="Timer" to="." method="_on_timer_timeout"]
