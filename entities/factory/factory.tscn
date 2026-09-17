@@ -1,6 +1,6 @@
 [gd_scene load_steps=10 format=3 uid="uid://c6s3hrnvu5oc7"]
 
-[ext_resource type="Script" path="res://factoryData.gd" id="1_e6wqb"]
+[ext_resource type="Script" path="res://entities/factory/factoryData.gd" id="1_e6wqb"]
 [ext_resource type="Texture2D" uid="uid://whatcnelhdo1" path="res://resources/factory.png" id="2_rlsjt"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_u32xt"]
