@@ -1,2 +1,25 @@
 # Godot 4+ specific ignores
 .godot/
+
+# Residuos del editor (los `Mai*.tmp` de la raíz volvían solos)
+*.tmp
+
+# Artefactos de export (Project → Export). Ninguno existe todavía:
+# esto es para que no entren el día que se genere la primera build.
+builds/
+export/
+export_presets.cfg
+*.pck
+*.exe
+*.x86_64
+*.apk
+*.aab
+*.dmg
+*.wasm
+
+# ⚠️ Los ficheros `.uid` NO se ignoran: Godot 4.4+ genera uno por script y
+# son parte del proyecto. Si se ignoran, Godot los regenera y las referencias
+# entre escenas se rompen.
+
+# Capturas de `tools/ver_dilema.gd` — se regeneran, no se versionan.
+capturas/

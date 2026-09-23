@@ -64,7 +64,11 @@ func _build_ui():
 		vbox.add_child(stats_lbl);
 
 	var hint = Label.new();
-	hint.text = "R: reiniciar run   ESC: menú radial";
+	# Es el ÚNICO texto del juego que enseña los controles, así que tiene que decir la verdad: el
+	# radial se abre con click izquierdo (`Main.gd:141-151`), no con ESC —ESC lo CIERRA
+	# (`ui/radialMenu.gd:132`)—, y desde M0/M1 ese mismo click sobre una casilla ya ocupada abre el
+	# panel de la factoría en vez del radial.
+	hint.text = "Click izq: construir  ·  sobre factoría: gestionar  ·  Click der: demoler  ·  R: reiniciar";
 	hint.add_theme_color_override("font_color", Color(0.45, 0.55, 0.45));
 	hint.add_theme_font_size_override("font_size", 11);
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER;

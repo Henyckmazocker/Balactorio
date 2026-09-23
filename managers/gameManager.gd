@@ -56,31 +56,38 @@ var last_seen_pollution = 0.0;
 var deadlock_timer = 0.0;
 
 # Fracción del techo de tu propia línea que hay que sostener para merecer la recompensa
-# potente. 0.55 sale del barrido de M7 —nueve runs enteras, 45 tramos medidos—: una línea
-# alimentada, pegada y con los workers puestos rinde entre 0,59 y 1,00 de su techo, y una
-# sobreconstruida, desparramada o con la sierra sin madera que darle cae a 0,26-0,52. El
-# listón se pone en medio de ese hueco. Sensibilidad sobre esos mismos tramos: con 0,35 el
-# tier 2 se lleva 27 de 37 checkpoints —casi el regalo que M7 vino a quitar—, con 0,55-0,65
-# se queda en 19-20, y con 0,80 baja a 8, que es no llegar ni jugando bien.
+# potente. El listón va en el hueco entre una línea alimentada, pegada y con los workers
+# puestos (que rinde cerca de su techo) y una sobreconstruida, desparramada o con la sierra
+# sin madera que darle (que cae muy por debajo). Bajarlo convierte el tier 2 en el regalo que
+# M7 vino a quitar; subirlo deja sin él incluso a quien juega bien. Valor PROVISIONAL:
+# salió de mediciones defectuosas (retiradas el 2026-09-23) y se supone incorrecto.
 const TIER2_EFFICIENCY = 0.55;
 
 # Segundos seguidos que las tres condiciones del punto muerto tienen que cumplirse a la vez
-# para declarar muerta la run. 25,0 sale MEDIDO del spike de M6 (tests/sim_derrota.gd,
-# bloque 4), que cronometra lo único que fija el suelo: cuánto tarda LA JUGADA que desatasca
-# en romper una condición, contada desde que se coloca.
-#   Reforester sobre suciedad (rompe la 2, es su tick).......  5 s
-#   WoodCutter sobre casilla limpia (rompe la 1)..............  4 s
-#   WoodCutter sobre casilla a medio ahogar, choke 0,50.......  8 s
-#   WoodCutter sobre casilla casi cerrada, choke 0,25......... 16 s
-#   WoodCutter sobre casilla a punto de cerrarse, choke 0,10.. 44 s
-# El ahogo es lo que alarga la espera, no el `tick` del JSON: production_debt suelta una
-# unidad cada ceil(1/choke) ticks, así que la última casilla libre de un mapa medio saturado
-# —que está sucia, no limpia— multiplica por cuatro el tiempo hasta la primera entrega. 25,0
-# cubre esos 16 s con margen para que el jugador lea el aviso de M5 y reaccione (~9 s), y
-# deja FUERA a propósito el caso de choke 0,10: una línea que entrega una unidad cada 44 s
-# sobre un mapa donde nadie limpia y no queda dónde construir está muerta, aunque se mueva.
-# Y no más: la gracia es exactamente el tiempo que el jugador pasa mirando una pantalla
-# sentenciada con la cuenta atrás delante.
+# para declarar muerta la run. Lo único que fija el suelo es cuánto tarda LA JUGADA que
+# desatasca en romper una condición, contada desde que se coloca (e incluye tenderle la cinta
+# y pagarla). El caso más largo que el juego sabe producir es una productora sobre una
+# casilla casi cerrada, choke 0,25: el ahogo —no el `tick` del JSON— es lo que alarga la
+# espera, porque production_debt suelta una unidad cada ceil(1/choke) ticks. 25,0 cubre ese
+# caso con margen para que el jugador lea el aviso de M5 y reaccione, y deja FUERA a propósito
+# el choke 0,10: una línea que entrega una unidad cada ~45 s sobre un mapa donde nadie limpia y
+# no queda dónde construir está muerta, aunque se mueva. Y no más: la gracia es exactamente el
+# tiempo que el jugador pasa mirando una pantalla sentenciada con la cuenta atrás delante.
+# 🔴 Valor PROVISIONAL: salió de mediciones defectuosas (retiradas el 2026-09-23) y se supone
+# incorrecto hasta volver a medirlo.
+#
+# 🔴 EL PRECIO NO ALARGA EL FALSO POSITIVO, y no es casualidad: _evaluate_deadlock() compara
+# FRAME CONTRA FRAME (`pending > last_pending_quantity`), no contra una foto de antes de la
+# jugada, así que una bolsa que baja al pagar y sube en la primera entrega rompe la condición 1
+# en esa entrega, valga lo que valga la factoría. Lo mismo por el lado de la 2: el total sube
+# por las `toxic` que regalan las cartas, pero el Reforester rompe la condición en su primer
+# tick de limpieza.
+#
+# La logística tampoco mueve el número: una procesadora sin cinta de entrada no entrega nunca
+# (M2), así que no es un falso positivo que se pueda cubrir con más segundos —es una jugada que
+# no desatasca nada—. La jugada que sí desatasca es tender la cinta, y ésa vacía el búfer de
+# salida en el acto (M4, beltNetwork.place_drag() llama a flush_output_buffers()): cuesta cero
+# segundos.
 const DEADLOCK_GRACE = 25.0;
 
 # Presupuesto de caracteres de la línea del HUD. El Label `Objective` de Main.tscn es UNA
@@ -198,13 +205,64 @@ func update(bag, pollution_manager = null):
 	# del checkpoint que toca ahora y no el del que se acaba de cerrar.
 	_sync_reserve(bag);
 
+# Los materiales con los que se puede cubrir el objetivo de un checkpoint: el suyo primero y
+# después los de `accepts: [...]`.
+#
+# **`accepts` es OPCIONAL** (Variedad M0, 2026-09-20), con el MISMO contrato que `materials`
+# y que `cost`: **su ausencia significa `[material]`**, así que un checkpoint que no lo
+# declare se comporta exactamente como antes de este hito y nada que no lo declare se entera
+# de que existe.
+#
+# Existe porque las dos cadenas del juego tienen materiales DISJUNTOS —{wood, plank} contra
+# {stone, brick}— y _can_afford() exige material a material: con la curva de un solo material
+# por checkpoint, CUALQUIER curva mata a una de las dos estrategias. El orden manda: es el
+# que sigue el cobro, o sea que el material propio se gasta antes que la alternativa.
+func _accepted_materials(checkpoint):
+	var accepted = [];
+	var material = checkpoint.get("material", "");
+	if material != "":
+		accepted.append(material);
+	for extra in checkpoint.get("accepts", []):
+		var name = str(extra);
+		if name != "" and not accepted.has(name):
+			accepted.append(name);
+	return accepted;
+
 # Todo lo que un checkpoint se lleva de la bolsa: el objetivo más su `maintenance`, que es
 # un dict `material -> cantidad`. Si el mantenimiento pide el mismo material que el objetivo
 # se suman, porque salen de la misma bolsa y el jugador tiene que juntar los dos.
-func _checkpoint_cost(checkpoint):
+#
+# Con `bag`, el objetivo se REPARTE entre los materiales que el checkpoint acepta, en su
+# orden y hasta cubrir la cantidad: los materiales aceptados son una sola bolsa común («40 /
+# 55 plank o stone»), no un requisito por cabeza. Sin `bag` —y es lo que siguen haciendo
+# _unproducible_materials() y la suite— el objetivo se apunta entero a su propio material,
+# que es la foto nominal del checkpoint y lo que valía antes de este hito.
+#
+# Lo que cada material puede aportar es lo que hay menos lo que el peaje ya se lleva de él:
+# sin descontarlo, un objetivo pagado con el mismo material que el mantenimiento contaría dos
+# veces la misma unidad y el checkpoint se cerraría sin cubrirlo.
+func _checkpoint_cost(checkpoint, bag = null):
 	var cost = {};
-	cost[checkpoint.get("material", "")] = int(checkpoint.get("quantity", 0));
+	var quantity = int(checkpoint.get("quantity", 0));
 	var maintenance = _maintenance_cost(checkpoint);
+	var accepted = _accepted_materials(checkpoint);
+	if bag == null or accepted.size() <= 1:
+		cost[checkpoint.get("material", "")] = quantity;
+	else:
+		var left = quantity;
+		for material in accepted:
+			if left <= 0:
+				break;
+			var usable = max(0, int(bag.getQuantity(material)) - int(maintenance.get(material, 0)));
+			var take = min(left, usable);
+			if take > 0:
+				cost[material] = cost.get(material, 0) + take;
+				left -= take;
+		if left > 0:
+			# No alcanza con ninguna combinación: lo que falta se apunta al material propio,
+			# que es el que el HUD anuncia. _can_afford() lo compara contra la bolsa y lo
+			# rechaza, así que _charge_checkpoint() no llega a correr con este reparto.
+			cost[accepted[0]] = cost.get(accepted[0], 0) + left;
 	for material in maintenance:
 		cost[material] = cost.get(material, 0) + maintenance[material];
 	return cost;
@@ -227,7 +285,7 @@ func _maintenance_cost(checkpoint):
 #     fabrica el `plank` del objetivo: objetivo y peaje compiten por la misma materia prima,
 #     así que acelerar la serrería —«Sierra industrial»— se comía la madera antes de que
 #     llegara a cubrirlo y el checkpoint, que desde M4 exige el peaje entero, no se cerraba
-#     jamás. Medido antes de M6: `ecologist` clavada en 2/5 y `standard` en 3/5 tras 900 s.
+#     jamás.
 #  2. **El objetivo, si es una materia prima** (_is_raw_material()). Una materia prima es la
 #     raíz de la cadena: quien se la come por debajo de lo exigido bloquea el checkpoint para
 #     siempre, porque no hay nada más arriba que la reponga aparte de su propia factoría.
@@ -244,6 +302,21 @@ func _maintenance_cost(checkpoint):
 # Con esto, de cada material que un checkpoint exige y que alguna factoría consume como
 # insumo: o bien está reservado, o bien solo lo consumen factorías que ninguna mejora del
 # catálogo puede acelerar. La suite lo fija como invariante y no como casualidad.
+#
+# 🔴 Y LO QUE UN `accepts` NO AÑADE A LA RESERVA, que es la regla que impide colgar la run
+# con dos materiales aceptados (Variedad M0, 2026-09-20): se reserva el peaje entero y el
+# objetivo SOLO cuando el material PROPIO del checkpoint es materia prima —o sea, ni un gramo
+# más que antes de este hito—. Las alternativas de `accepts` no se apartan, por dos
+# motivos:
+#  1. La garantía de no colgarse cuelga del camino PROPIO, que es el que sigue protegido
+#     entero. Una alternativa es una segunda forma de cerrar el mismo checkpoint: comérsela
+#     lo retrasa, no lo impide, que es exactamente el criterio con el que el objetivo
+#     procesado nunca se reservó.
+#  2. Apartarlas lo colgaría de verdad. `stone` es materia prima (la Quarry no consume nada),
+#     así que la regla de arriba aplicada a la alternativa del checkpoint 3 reservaría sus
+#     unidades enteras — y `stone` es el INSUMO de la Foundry: la cadena de piedra se quedaría
+#     sin fabricar un solo `brick` en toda la run, que es justo el material con el que se
+#     cierra el checkpoint 5.
 func _reserved_materials(checkpoint):
 	var reserve = _maintenance_cost(checkpoint);
 	var material = checkpoint.get("material", "");
@@ -281,25 +354,35 @@ func _sync_reserve(bag):
 # No puede colgar la run, y desde M6 no es solo porque `wood` no necesite inputs y los tres
 # StartingPackages traigan WoodCutter: además la bolsa reserva el peaje (_sync_reserve()),
 # así que ninguna factoría puede comerse la madera que falta para cubrirlo.
+# Desde Variedad M0 el reparto se pide CON la bolsa: un checkpoint con `accepts` cubre su
+# objetivo con la suma de lo que acepta, y sin `accepts` el reparto es el de siempre.
 func _can_afford(bag, checkpoint):
-	var cost = _checkpoint_cost(checkpoint);
+	var cost = _checkpoint_cost(checkpoint, bag);
 	for material in cost:
 		if bag.getQuantity(material) < cost[material]:
 			return false;
 	return true;
 
-# Devuelve lo cobrado para que las pruebas puedan afirmarlo sin espiar la bolsa.
+# Devuelve lo cobrado para que las pruebas puedan afirmarlo sin espiar la bolsa. Se cobra el
+# MISMO reparto que _can_afford() acaba de validar —misma bolsa, mismo frame—, así que lo que
+# se cobra es exactamente lo que se exigió.
 func _charge_checkpoint(bag, checkpoint):
-	var cost = _checkpoint_cost(checkpoint);
+	var cost = _checkpoint_cost(checkpoint, bag);
 	for material in cost:
 		bag.removeFromBag(material, cost[material]);
 	return cost;
 
-# Cuánto material del checkpoint en curso hay ya en la bolsa. 0 si no queda checkpoint.
+# Cuánto material del checkpoint en curso hay ya en la bolsa. 0 si no queda checkpoint. Con
+# `accepts` se suman los aceptados, porque es la misma bolsa común con la que se cierra: si
+# se mirara solo el material propio, el tramo diría que el jugador ha producido de cero unas
+# unidades que ya traía hechas en el otro material y regalaría el tier 2 (ver _reference_time).
 func _stock_for_current(bag):
 	if current_checkpoint_index >= checkpoints.size():
 		return 0;
-	return bag.getQuantity(checkpoints[current_checkpoint_index].get("material", ""));
+	var total = 0;
+	for material in _accepted_materials(checkpoints[current_checkpoint_index]):
+		total += bag.getQuantity(material);
+	return total;
 
 # El punto muerto: aquí no hay ningún «demasiado sucio». La run se declara muerta cuando
 # durante DEADLOCK_GRACE segundos SEGUIDOS se cumplen las tres a la vez —no se produce nada,
@@ -335,7 +418,7 @@ func _evaluate_deadlock(bag, pollution_manager):
 	# 3. No queda ninguna casilla construible. Va la última y solo cuando las dos baratas ya
 	#    se cumplen porque es la cara: recorre el mapa entero preguntando canPlaceFactory(),
 	#    que a su vez recorre las factorías vivas. Medido antes de darlo por bueno: el peor
-	#    caso —16x10 casillas, 20 factorías y ninguna casilla libre, o sea el barrido entero—
+	#    caso —16x10 casillas, 20 factorías y ninguna casilla libre, o sea el recorrido entero—
 	#    cuesta 0,06 ms por llamada, un 0,4 % de un frame a 60 fps. No hace falta espaciar la
 	#    evaluación, así que no se espacia: un punto muerto evaluado a saltos daría avisos que
 	#    parpadean.
@@ -369,8 +452,18 @@ func _evaluate_deadlock(bag, pollution_manager):
 func _pending_quantity(bag):
 	if current_checkpoint_index >= checkpoints.size():
 		return 0;
+	var cp = checkpoints[current_checkpoint_index];
 	var total = 0;
-	for material in _checkpoint_cost(checkpoints[current_checkpoint_index]):
+	var counted = {};
+	# Los ACEPTADOS y no solo el propio: desde Variedad M0 producir la alternativa mueve el
+	# checkpoint igual que producir el material del título, así que tiene que romper la
+	# condición 1. Si no, una run de piedra con la cantera entregando sin parar contaría como
+	# «no se ha producido nada» y la cuenta atrás correría con la fábrica funcionando.
+	for material in _accepted_materials(cp):
+		counted[material] = true;
+	for material in _maintenance_cost(cp):
+		counted[material] = true;
+	for material in counted:
 		total += bag.getQuantity(material);
 	return total;
 
@@ -392,10 +485,9 @@ func _triggerWin(pollution_manager):
 
 # El GDD pide que «el tiempo desde inicialización hasta cumplimiento determine la calidad de
 # la recompensa». Hasta M7 la vara era _reference_time(): lo que tardaría UNA factoría base
-# sin sinergias ni mejoras. Medido al cerrar M4, M5 y M6, esa vara **no discrimina**: la
-# curva pide 60/75/165/300/510 s de factoría base y cualquier cadena real cierra los tramos
-# en 16-29 s, así que los cinco checkpoints salían tier 2 en todas las runs y la recompensa
-# potente se regalaba. El motivo número 1 del plan —«las mejoras no premian jugar bien»—
+# sin sinergias ni mejoras. Esa vara **no discrimina**: la curva pide 60/75/165/300/510 s de
+# factoría base y cualquier cadena real cierra los tramos mucho antes, así que los cinco
+# checkpoints salían tier 2 y la recompensa potente se regalaba. El motivo número 1 del plan —«las mejoras no premian jugar bien»—
 # seguía sin cumplirse.
 #
 # Desde M7 la vara es **la línea que el jugador tiene puesta**: el techo que su propia
@@ -598,10 +690,40 @@ func _rescue_upgrades(pool):
 		var upgrade = upgrades_catalog[id];
 		if upgrade.get("type", "") != "unlock_factory":
 			continue;
-		var factory = factories_catalog.get(upgrade.get("factory", ""), {});
-		if missing.has(factory.get("material", null)):
-			rescue.append(id);
+		# Se cruza contra TODO lo que esa factoría sabe fabricar y no solo contra el material
+		# con el que se coloca (ver _factory_materials()): una multi-material rescata también
+		# por su `materials[]`.
+		for material in _factory_materials(upgrade.get("factory", "")):
+			if missing.has(material):
+				rescue.append(id);
+				break;
 	return rescue;
+
+# Todo lo que una factoría sabe fabricar: su `materials: [...]` si lo declara y, si no,
+# `[material]`. Es el MISMO contrato opcional de siempre —el de factoryData.initialize(),
+# donde la ausencia de `materials` significa `[material]`—, traído aquí porque el rescate
+# tiene que ver a una multi-material entera: la `Foundry` declara `material: "brick"` con
+# `glass` en su lista desde el M3 del Plan «Variedad de Factorías» (2026-09-22), y el objetivo
+# final de la curva pide precisamente `glass` — comparando solo contra `material`, ese
+# checkpoint no encontraría rescate y la run se colgaría sin salida. Las otras ocho entradas no
+# declaran `materials`, así que para ellas esto devuelve exactamente lo que devolvía el
+# `factory["material"]` de antes.
+#
+# El `null` del Reforester, la WaterTreatment y el Storage no es un material que nadie pueda
+# pedir: se cae de la lista, que es lo que hacía el `if material != null` al que sustituye.
+func _factory_materials(factory_name):
+	var factory = factories_catalog.get(factory_name, {});
+	var declared = factory.get("materials", null);
+	var candidates = [];
+	if declared != null and not declared.is_empty():
+		candidates = declared;
+	else:
+		candidates = [factory.get("material", null)];
+	var materials = [];
+	for material in candidates:
+		if material != null and str(material) != "" and not materials.has(material):
+			materials.append(material);
+	return materials;
 
 # Materiales que los checkpoints que quedan van a pedir —objetivo y mantenimiento, que desde
 # M4 son requisito por igual— y que ninguna factoría disponible produce. Se miran todos los
@@ -610,14 +732,53 @@ func _rescue_upgrades(pool):
 func _unproducible_materials():
 	var producible = {};
 	for factory_name in _available_factories():
-		var material = factories_catalog.get(factory_name, {}).get("material", null);
-		if material != null:
+		for material in _factory_materials(factory_name):
 			producible[material] = true;
 	var missing = {};
 	for i in range(current_checkpoint_index, checkpoints.size()):
-		for material in _checkpoint_cost(checkpoints[i]):
+		var checkpoint = checkpoints[i];
+		# El OBJETIVO es una bolsa común desde que existe `accepts: [...]` (Variedad M0):
+		# el checkpoint 3 se cierra con `plank` O con `stone`, así que falta un material
+		# solo cuando NINGUNO de los que acepta es producible. Mirar únicamente el suyo
+		# —lo que hacía el _checkpoint_cost() sin bag de antes— tenía las dos caras mal: da
+		# por bloqueado un checkpoint que la otra cadena sí podía cerrar, y por eso concede
+		# cartas de rescate que no rescatan de nada.
+		var accepted = _accepted_materials(checkpoint);
+		var covered = false;
+		for material in accepted:
+			if producible.has(material):
+				covered = true;
+				break;
+		if not covered:
+			# Se apuntan los aceptados ENTEROS y no solo el propio: cualquiera de ellos
+			# desatasca el checkpoint, así que cualquier factoría que sepa hacer uno vale
+			# como rescate.
+			for material in accepted:
+				missing[material] = true;
+				# 🔴 Y a partir de aquí ese material cuenta como PRODUCIBLE para los
+				# checkpoints siguientes (Variedad M5, 2026-09-22). Lo que se apunta se
+				# concede en esta misma pantalla y se aplica en el acto
+				# (Main._on_checkpoint_reached()), así que seguir tratándolo como imposible
+				# da por bloqueados checkpoints que la carta ya recién concedida desatasca
+				# — y el rescate concede una carta por cada uno. Con las tres
+				# `unlock_factory` de la segunda cadena en el catálogo eso dejó de ser
+				# teórico: en `lumberjack` y `ecologist`, `plank` falta en los checkpoints
+				# 2 a 5, y como el 3 acepta `stone`, el 4 `brick` y el 5 `glass`, el
+				# checkpoint 1 concedía de golpe la serrería, la cantera Y la fundición
+				# —la segunda cadena entera regalada, y el factory token sin razón de ser—
+				# cuando con la serrería sola los cuatro quedan cubiertos.
+				# Lo que NO cambia: cuando el primer checkpoint bloqueado acepta dos
+				# materiales imposibles se siguen concediendo las dos cartas, que es la
+				# decisión de Variedad M2 y tiene prueba propia.
+				producible[material] = true;
+		# El MANTENIMIENTO no se reparte: es un `material -> cantidad` que se exige material
+		# a material (_can_afford), así que aquí cada uno cuenta por separado.
+		for material in _maintenance_cost(checkpoint):
 			if material != "" and not producible.has(material):
 				missing[material] = true;
+				# Misma regla que arriba, y por la misma razón: el peaje que falta ya lleva
+				# su carta apuntada, y repetirlo checkpoint a checkpoint no añade ninguna.
+				producible[material] = true;
 	return missing;
 
 # Una mejora sin `tier` en el JSON cuenta como corriente: así un catálogo a medio etiquetar
@@ -684,12 +845,22 @@ func _progressText(bag, pollution_manager = null, deadlock_open = false):
 	if current_checkpoint_index >= checkpoints.size():
 		return "¡Producción completada!";
 	var cp = checkpoints[current_checkpoint_index];
-	var current = bag.getQuantity(cp["material"]);
+	# Con `accepts` el numerador es la bolsa COMÚN de lo aceptado y el material se nombra con
+	# la lista entera separada por « o » —«Checkpoint 3/5: 40 / 55 plank o stone»—, porque es
+	# literalmente lo que _can_afford() exige: enseñar solo el propio dejaría al jugador de
+	# piedra viendo un 0 con el almacén lleno. Sin `accepts` la lista es de un elemento y el
+	# texto es carácter por carácter el de antes de este hito. Cada alternativa cuesta 8-9
+	# caracteres de los HUD_MAX_CHARS, y la línea más larga que la curva real sabe producir
+	# está medida por la prueba de longitud de la suite.
+	var accepted = _accepted_materials(cp);
+	var current = 0;
+	for material in accepted:
+		current += bag.getQuantity(material);
 	var label = cp.get("label", "Objetivo");
 	var pollution_text = "";
 	if pollution_manager and not deadlock_open:
 		pollution_text = "  |  " + pollution_manager.getStatusText();
-	return "%s: %d / %d %s%s%s" % [label, current, cp["quantity"], cp["material"],
+	return "%s: %d / %d %s%s%s" % [label, current, cp["quantity"], " o ".join(accepted),
 		_maintenanceText(bag, cp), pollution_text];
 
 # El mantenimiento se anuncia ANTES de cobrarse, y con su progreso, no solo con su importe.
@@ -710,7 +881,14 @@ func _maintenanceText(bag, checkpoint):
 	# no la consumen, así que el jugador ve madera en el almacén y serrerías paradas. Sin la
 	# palabra, eso se lee como un bug; con ella, el número que el HUD anuncia, el que la
 	# bolsa protege y el que el checkpoint cobra son el mismo.
-	return "  (mantenimiento reservado: %s)" % ", ".join(parts);
+	# «peaje» y no «mantenimiento» desde Variedad M0 (2026-09-20), y es una cuestión de
+	# CENTÍMETROS, no de estilo: con el `accepts` del checkpoint 5 la línea del colapso pasó a
+	# medir **159 caracteres de los 155** que cabe el Label (`… plank o brick`, medido por la
+	# prueba de longitud de la suite). Cada alternativa cuesta 8-9 caracteres y el presupuesto
+	# está medido en pantalla, así que lo que sobraba había que quitarlo de aquí: «peaje» es
+	# el nombre que este manager le da al `maintenance` en todos sus comentarios, ahorra 8
+	# caracteres —151 de 155— y deja intacta la palabra que de verdad informa, «reservado».
+	return "  (peaje reservado: %s)" % ", ".join(parts);
 
 func reset():
 	current_checkpoint_index = 0;

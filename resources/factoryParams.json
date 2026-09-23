@@ -4,10 +4,10 @@
 			"material": "wood",
 			"tick": 4,
 			"recieve": null,
-			"deliverTo": ["WoodProcessing"],
 			"pollution": 3.0,
 			"type": "production",
 			"workers_needed": 0,
+			"cost": { "wood": 4 },
 			"synergies": {
 				"WoodProcessing": { "tick_bonus": 1 }
 			}
@@ -16,35 +16,69 @@
 			"material": "plank",
 			"tick": 3,
 			"recieve": ["wood"],
-			"deliverTo": null,
 			"pollution": 2.0,
 			"type": "production",
 			"workers_needed": 1,
+			"cost": { "wood": 8 },
 			"synergies": {
 				"WoodCutter": { "output_bonus": 1 }
+			}
+		},
+		"Quarry": {
+			"material": "stone",
+			"tick": 5,
+			"recieve": null,
+			"pollution": 4.0,
+			"type": "production",
+			"workers_needed": 1,
+			"cost": { "stone": 8 },
+			"synergies": {}
+		},
+		"Foundry": {
+			"material": "brick",
+			"materials": ["brick", "glass"],
+			"tick": 4,
+			"recieve": ["stone"],
+			"pollution": 3.0,
+			"type": "production",
+			"workers_needed": 1,
+			"cost": { "wood": 6, "stone": 12 },
+			"synergies": {
+				"WoodProcessing": { "output_bonus": 1 }
 			}
 		},
 		"Reforester": {
 			"material": null,
 			"tick": 5,
 			"recieve": null,
-			"deliverTo": null,
 			"pollution": -4.0,
 			"type": "restoration",
 			"workers_needed": 0,
+			"cost": { "wood": 6 },
 			"synergies": {
 				"Reforester": { "pollution_mult": 1.25 },
 				"WoodCutter": { "pollution_mult": 0.5 }
 			}
 		},
+		"WaterTreatment": {
+			"material": null,
+			"tick": 4,
+			"recieve": ["stone"],
+			"pollution": -7.0,
+			"type": "restoration",
+			"workers_needed": 1,
+			"cost": { "wood": 4, "stone": 8 },
+			"requires_adjacent": ["stream", "lake"],
+			"synergies": {}
+		},
 		"MetaFactory": {
 			"material": "factory_token",
 			"tick": 12,
 			"recieve": ["plank"],
-			"deliverTo": null,
 			"pollution": 0.5,
 			"type": "production",
 			"workers_needed": 2,
+			"cost": { "plank": 6 },
 			"synergies": {
 				"WoodProcessing": { "tick_bonus": 2 }
 			}
@@ -53,22 +87,35 @@
 			"material": "worker",
 			"tick": 15,
 			"recieve": ["plank"],
-			"deliverTo": null,
 			"pollution": 0.0,
 			"type": "production",
 			"workers_needed": 0,
+			"cost": { "plank": 4 },
+			"synergies": {}
+		},
+		"Storage": {
+			"material": null,
+			"tick": 1,
+			"recieve": null,
+			"pollution": 0.0,
+			"type": "storage",
+			"workers_needed": 0,
+			"cost": { "wood": 10 },
 			"synergies": {}
 		}
 	},
 	"Workers": {
 		"initial": 2
 	},
+	"Belts": {
+		"cost_per_cell": { "wood": 1 }
+	},
 	"Checkpoints": [
 		{ "material": "wood",  "quantity": 15,  "label": "Checkpoint 1/5", "rewards": { "workers": 1 } },
 		{ "material": "plank", "quantity": 25,  "label": "Checkpoint 2/5", "maintenance": { "wood": 5 },  "rewards": { "workers": 1 } },
-		{ "material": "plank", "quantity": 55,  "label": "Checkpoint 3/5", "maintenance": { "wood": 10 }, "rewards": { "workers": 2 } },
-		{ "material": "plank", "quantity": 100, "label": "Checkpoint 4/5", "maintenance": { "wood": 15 }, "rewards": { "workers": 2 } },
-		{ "material": "plank", "quantity": 170, "label": "Objetivo final", "maintenance": { "wood": 20 }, "rewards": { "workers": 2 } }
+		{ "material": "plank", "quantity": 55,  "accepts": ["stone"], "label": "Checkpoint 3/5", "maintenance": { "wood": 10 }, "rewards": { "workers": 2 } },
+		{ "material": "plank", "quantity": 100, "accepts": ["brick"], "label": "Checkpoint 4/5", "maintenance": { "wood": 15 }, "rewards": { "workers": 2 } },
+		{ "material": "plank", "quantity": 170, "accepts": ["glass"], "label": "Objetivo final", "maintenance": { "wood": 20 }, "rewards": { "workers": 2 } }
 	],
 	"Upgrades": {
 		"speed_woodcutter": {
@@ -124,7 +171,7 @@
 			"target": "WoodProcessing",
 			"amount": 2,
 			"tier": 2,
-			"map_downside": { "cells": 2, "type": "toxic" }
+			"map_downside": { "cells": 1, "type": "toxic" }
 		},
 		"extra_wood": {
 			"name": "Tala intensiva",
@@ -133,7 +180,7 @@
 			"target": "WoodCutter",
 			"amount": 1,
 			"tier": 2,
-			"map_downside": { "cells": 2, "type": "toxic" }
+			"map_downside": { "cells": 3, "type": "toxic" }
 		},
 		"extra_plank": {
 			"name": "Doble hoja",
@@ -152,6 +199,30 @@
 			"amount": 1,
 			"tier": 2,
 			"map_downside": { "cells": 1, "type": "toxic" }
+		},
+		"unlock_quarry": {
+			"name": "Concesión minera",
+			"description": "Desbloquea Quarry, la única fuente de piedra: el material que aceptan los checkpoints desde el tercero y con el que se pagan la fundición y la depuradora. Es también la factoría que más ensucia del catálogo.",
+			"type": "unlock_factory",
+			"factory": "Quarry",
+			"tier": 2,
+			"map_downside": { "cells": 2, "type": "toxic" }
+		},
+		"unlock_foundry": {
+			"name": "Horno de campaña",
+			"description": "Desbloquea Foundry, que con la misma piedra fabrica ladrillo o vidrio — lo que piden el cuarto checkpoint y el objetivo final. Sin piedra que le llegue por cinta se queda parada.",
+			"type": "unlock_factory",
+			"factory": "Foundry",
+			"tier": 2,
+			"map_downside": { "cells": 1, "type": "toxic" }
+		},
+		"unlock_watertreatment": {
+			"name": "Planta depuradora",
+			"description": "Desbloquea WaterTreatment, que limpia casi el doble que el Reforester. Solo se puede construir junto a un río o un lago, y consume piedra por cinta para funcionar.",
+			"type": "unlock_factory",
+			"factory": "WaterTreatment",
+			"tier": 2,
+			"map_downside": { "cells": 1, "type": "toxic" }
 		}
 	},
 	"StartingPackages": {
@@ -159,6 +230,7 @@
 			"name": "Estándar",
 			"description": "Comienzo equilibrado. WoodCutter + WoodProcessing disponibles, 2 workers.",
 			"factories": ["WoodCutter", "WoodProcessing", "Reforester", "MetaFactory", "WorkerCamp"],
+			"starting_stock": { "wood": 40, "plank": 4, "stone": 15 },
 			"extra_workers": 0,
 			"unlock_id": null
 		},
@@ -166,6 +238,7 @@
 			"name": "Leñador",
 			"description": "Especialización en madera. WoodCutter extra rápido, +2 workers, sin procesadora al inicio.",
 			"factories": ["WoodCutter", "Reforester", "MetaFactory", "WorkerCamp"],
+			"starting_stock": { "wood": 50 },
 			"speed_boosts": [{ "target": "WoodCutter", "amount": 1 }],
 			"extra_workers": 2,
 			"unlock_id": "lumberjack"
@@ -174,6 +247,7 @@
 			"name": "Ecologista",
 			"description": "Reforester disponible desde el inicio. Contaminación reducida, pero menos producción.",
 			"factories": ["WoodCutter", "Reforester", "MetaFactory", "WorkerCamp"],
+			"starting_stock": { "wood": 36, "plank": 8 },
 			"extra_workers": 0,
 			"unlock_id": "ecologist"
 		}
@@ -182,7 +256,7 @@
 		"forest":   { "buildable": true,  "color": [0.1, 0.6, 0.1, 1], "passive_pollution_per_tick": 0.0,
 		              "adjacency_bonus": { "WoodCutter": { "output_bonus": 1 } } },
 		"mineral":  { "buildable": true,  "color": [0.55, 0.45, 0.3, 1], "passive_pollution_per_tick": 0.0,
-		              "adjacency_bonus": {} },
+		              "adjacency_bonus": { "Quarry": { "output_bonus": 2 } } },
 		"fertile":  { "buildable": true,  "color": [1.0, 0.85, 0.1, 1], "passive_pollution_per_tick": 0.0,
 		              "adjacency_bonus": { "Reforester": { "output_bonus": 2 } } },
 		"stream":   { "buildable": true,  "color": [0.4, 0.7, 1.0, 1], "passive_pollution_per_tick": 0.0,
@@ -209,11 +283,16 @@
 			"size": [16, 10],
 			"blocked_cells": [],
 			"pollution_start": 0.0,
+			"storage_cell": [13, 8],
 			"special_cells": [
 				{ "pos": [2, 2], "type": "forest" },
 				{ "pos": [3, 2], "type": "forest" },
 				{ "pos": [5, 4], "type": "fertile" },
 				{ "pos": [9, 1], "type": "stream" },
+				{ "pos": [1, 4], "type": "mineral" },
+				{ "pos": [6, 2], "type": "mineral" },
+				{ "pos": [11, 1], "type": "mineral" },
+				{ "pos": [15, 5], "type": "mineral" },
 				{ "pos": [12, 6], "type": "ruins" },
 				{ "pos": [14, 3], "type": "lake" },
 				{ "pos": [14, 4], "type": "lake" }
@@ -225,6 +304,7 @@
 			"size": [16, 10],
 			"blocked_cells": [[3,2],[4,2],[7,5],[8,5],[8,6]],
 			"pollution_start": 20.0,
+			"storage_cell": [13, 8],
 			"unlock_id": "wasteland",
 			"special_cells": [
 				{ "pos": [1, 1], "type": "burned" },
@@ -236,6 +316,9 @@
 				{ "pos": [13, 5], "type": "swamp" },
 				{ "pos": [14, 5], "type": "swamp" },
 				{ "pos": [0, 5], "type": "mineral" },
+				{ "pos": [1, 4], "type": "mineral" },
+				{ "pos": [6, 2], "type": "mineral" },
+				{ "pos": [15, 5], "type": "mineral" },
 				{ "pos": [15, 8], "type": "ruins" }
 			]
 		}

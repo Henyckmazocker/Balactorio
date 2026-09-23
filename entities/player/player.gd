@@ -1,6 +1,5 @@
 extends Node
 
-var selectedFactory = null;
 var availableFactories = ["WoodCutter", "WoodProcessing"];
 var speedModifiers = {};
 var outputModifiers = {};
@@ -26,7 +25,6 @@ func getOutputForFactory(factory_name, base_output):
 	return base_output;
 
 func reset():
-	selectedFactory = null;
 	availableFactories = ["WoodCutter", "WoodProcessing"];
 	speedModifiers = {};
 	outputModifiers = {};

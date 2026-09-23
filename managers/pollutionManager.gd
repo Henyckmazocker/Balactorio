@@ -22,30 +22,35 @@ var pollution_threshold = 200.0;
 # * 0.25 = 12.5; se desacopla en su propia constante para que recalibrar la escala del tintado
 # no mueva ni un punto la regla de colocación.
 var cell_block_pollution = 12.5;
-# Umbral de restauración escalado: thr = base + factor * pico. Con el pico a 0 vale el 5.0
-# de siempre; una run sucia de pico 200 tiene que bajar a 29. El factor sale del barrido de
-# M0 (tests/sim_m0.gd) remedido tras M0.5.
 # Contaminación LOCAL a partir de la cual una casilla desborda sobre sus vecinas (ver
 # tileMap.tick_contagion). Arranca en el punto de saturación, 12,5, pero es constante propia
 # por la misma razón por la que cell_block_pollution se separó de pollution_threshold:
 # recalibrar CUÁNDO desborda no debe mover ni un punto la regla de colocación.
 var contagion_pollution = 12.5;
 # Lo que un foco GENERA sobre cada vecina, POR SEGUNDO (tick_contagion lo escala por delta,
-# igual que passive_pollution_per_tick). 0,12 sale MEDIDO del spike de M6
-# (tests/sim_derrota.gd, bloques 1 y 2): es el valor más bajo del barrido que colapsa un mapa
-# abandonado —seis WoodCutter y nadie que vuelva— en menos de diez minutos en los DOS mapas,
-# que es lo que hace que el derrumbe se vea venir dentro de una sentada:
-#   rate  0,00   0,02    0,05    0,08    0,10    0,12    0,20   -> run_lost en forest_01
-#         nunca  nunca   1310 s   780 s   650 s   564 s   382 s
-#         nunca  —        988 s   642 s   —       450 s   296 s  -> y en wasteland_01
-# Con 0,00 el mapa conserva 150 casillas libres para siempre (la derrota es inalcanzable, que
-# es la razón entera de que el contagio exista) y con 0,02 todavía le quedan 30 a los 2000 s.
-# Y no lo nota una run jugada con cuidado: con Reforester pegados a la línea y racimo sobre
-# los focos, el pico de forest_01 pasa de 46,2 (sin contagio) a 74,9 y el umbral de
-# restauración de 10,5 a 14,0; en wasteland_01, de 59,6 a 61,0 y de 12,2 a 12,3. Las dos
-# cierran 5/5 en los mismos 205 s y 343 s que sin contagio: el número no le quita ritmo a
-# quien limpia, solo a quien abandona.
+# igual que passive_pollution_per_tick). Lo fijan tres criterios:
+#
+# 1) UN MAPA ABANDONADO TIENE QUE COLAPSAR EN MENOS DE DIEZ MINUTOS EN LOS DOS MAPAS, que es
+#    lo que hace que el derrumbe se vea venir dentro de una sentada. La derrota (run_lost)
+#    llega DEADLOCK_GRACE después de quedarse sin casilla construible. Con 0,00 el mapa
+#    conserva sus casillas libres para siempre —la derrota es inalcanzable, que es la razón
+#    entera de que el contagio exista—; subirlo acelera el colapso y bajarlo lo aleja.
+#
+# 2) Y NO LO PUEDE NOTAR UNA RUN JUGADA CON CUIDADO: lo que el rate le cuesta es pico y
+#    casillas libres, no un checkpoint. Subirlo demasiado dispara el pico (y con él el umbral
+#    de restauración) y deja el mapa sin sitio.
+#
+# 3) 🔴 EL SUELO DE LA SUITE: un foco tiene que saturar a una vecina LIMPIA en menos de dos
+#    minutos (tests/run_tests.gd, «Derrota M6»), o el derrumbe deja de verse venir. Es
+#    contagion_pollution / contagion_rate <= 120 s y con los 12,5 de hoy exige rate >= 0,105;
+#    0,12 lo cumple con margen (104 s contra 120). Bajarlo por debajo pone la suite en rojo.
+#
+# 🔴 Valor PROVISIONAL: salió de mediciones defectuosas (retiradas el 2026-09-23) y se supone
+# incorrecto hasta volver a medirlo. Hoy solo se comprueba el criterio 3.
 var contagion_rate = 0.12;
+# Umbral de restauración escalado: thr = base + factor * pico. Con el pico a 0 vale el 5.0
+# de siempre; una run sucia de pico 200 tiene que bajar a 29. Factor PROVISIONAL: salió
+# de mediciones defectuosas (retiradas el 2026-09-23) y se supone incorrecto.
 var restoration_base = 5.0;
 var restoration_peak_factor = 0.12;
 

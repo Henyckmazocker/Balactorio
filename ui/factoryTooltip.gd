@@ -1,5 +1,20 @@
 extends CanvasLayer
 
+# La razón de parada en palabras, compartida con `ui/factoryPanel.gd`: las dos superficies de
+# detalle dicen la misma frase con el mismo color, y ese color es el del marcador del mapa.
+const BLOCKED = preload("res://ui/blockedReason.gd");
+
+# 🔴 EL MARGEN DEL MARCO (Variedad M4b, 2026-09-22). El `panel` del tema por defecto de Godot
+# trae los cuatro `content_margin` a **0**, y un PanelContainer estira su hijo a todo lo que el
+# marco mide: medido, el tooltip salía con `marco 144 px` contra una línea de `144 px`, o sea
+# **0 px de aire a cada lado**. Con la depuradora del M4 la línea más ancha que estas superficies
+# saben escribir pasó a ser `⚠ Parada: sin insumo — tiéndele cinta de entrada`, **289 px**, que
+# llenaba el marco de borde a borde y hacía que el texto pareciera salirse. Se mete por un
+# `MarginContainer` y no tocando el `StyleBox` del tema a propósito: duplicar el stylebox
+# arrastraría también su fondo y su borde, que son del tema y no de esta pantalla.
+const MARGIN_H = 8;
+const MARGIN_V = 5;
+
 var _panel;
 
 func initialize(factory_node, file_data):
@@ -8,19 +23,53 @@ func initialize(factory_node, file_data):
 	_panel = PanelContainer.new();
 	add_child(_panel);
 
+	var margen = MarginContainer.new();
+	margen.add_theme_constant_override("margin_left", MARGIN_H);
+	margen.add_theme_constant_override("margin_right", MARGIN_H);
+	margen.add_theme_constant_override("margin_top", MARGIN_V);
+	margen.add_theme_constant_override("margin_bottom", MARGIN_V);
+	_panel.add_child(margen);
+
 	var vbox = VBoxContainer.new();
 	vbox.add_theme_constant_override("separation", 3);
-	_panel.add_child(vbox);
+	margen.add_child(vbox);
 
 	var params = file_data["Factories"].get(factory_node.type, {});
 
 	_add_label(vbox, factory_node.type, Color(1.0, 0.9, 0.2));
 
-	var material = str(params.get("material", null));
-	if material != "null":
-		_add_label(vbox, "Produce: " + material);
-	else:
+	# Por qué está parada, en una frase y con la acción dentro (M3). Va justo debajo del título
+	# porque es la pregunta con la que el ratón se ha quedado quieto encima: todo lo demás
+	# describe a la factoría, y esto dice qué hacer con ella.
+	# La que produce no enseña NADA de esto: el silencio significa que va bien, igual que en el
+	# mapa. Se pregunta contra "" y no contra un texto, que es la trampa que documenta el bloque
+	# de «Produce:» de aquí abajo.
+	# Aquí la etiqueta SÍ es estática, al revés que en el panel, pero no porque el tooltip diga
+	# la verdad para siempre: M3 lo razonó así —«nace y muere con el ratón»— y M4 lo desmintió
+	# con una captura, el tooltip abierto sin «Parada» sobre una casilla con el marcador rojo
+	# pintado. El tooltip muere cuando el ratón se va a OTRA casilla, no cuando el estado cambia.
+	# Quien lo mantiene al día es `Main._update_hover_tooltip()`, que compara por frame la razón
+	# de ahora con la que pintó y RECONSTRUYE el nodo entero cuando cambia. O sea: este
+	# `initialize()` no necesita repintarse porque quien lo llama lo vuelve a llamar, no porque el
+	# estado no se mueva. Si alguien le quita esa comparación, la etiqueta vuelve a mentir.
+	var razon = BLOCKED.reason_now(factory_node);
+	if BLOCKED.text_for(razon) != "":
+		_add_label(vbox, BLOCKED.text_for(razon), BLOCKED.color_for(razon));
+
+	# Se lee `production` de la FACTORÍA, no `material` del JSON: desde M2 una factoría puede
+	# cambiar qué fabrica (`factoryData.setProduction()`), y el JSON solo declara con qué se
+	# COLOCA. Leyendo el JSON, el tooltip de una factoría multi-material enseñaría siempre el
+	# material por defecto en vez del elegido. `production` arranca valiendo `material`, así que
+	# para las cinco factorías de hoy no cambia nada.
+	# Y se compara contra `null`, NO contra el texto "null": `str(null)` devuelve "<null>", así que
+	# la comparación de texto nunca acertaba, la rama de restauración era código muerto y el
+	# tooltip del Reforester pintaba literalmente «Produce: <null>». Mismo criterio que
+	# `ui/factoryPanel.gd:87-91`.
+	var material = factory_node.production;
+	if material == null:
 		_add_label(vbox, "Produce: — (restauración)", Color(0.5, 1.0, 0.5));
+	else:
+		_add_label(vbox, "Produce: " + str(material));
 
 	var needs = params.get("recieve", null);
 	if needs != null:
@@ -52,8 +101,12 @@ func initialize(factory_node, file_data):
 		var w_text = "Workers: " + str(factory_node.workers_assigned) + "/" + str(factory_node.workers_needed);
 		var w_color = Color(0.3, 1.0, 0.4) if factory_node.isActive() else Color(1.0, 0.3, 0.3);
 		_add_label(vbox, w_text, w_color);
-		if not factory_node.isActive():
-			_add_label(vbox, "⚠ INACTIVA (sin workers)", Color(1.0, 0.3, 0.3));
+		# Aquí vivía `⚠ INACTIVA (sin workers)`, que M3 ha SUSTITUIDO por la línea de arriba:
+		# decía exactamente el mismo estado —la razón "workers"— con otras palabras, en otro
+		# sitio y en otro color (rojo, el que el mapa reserva para el ahogo), así que dejarlos
+		# convivir era darle al jugador dos avisos de una sola cosa y dos vocabularios de color
+		# para el mismo estado. El contador «Workers: 0/1» en rojo se queda: eso es un número,
+		# no un aviso.
 
 	# Sinergias activas
 	var has_synergy = (factory_node.synergy_tick_bonus != 0

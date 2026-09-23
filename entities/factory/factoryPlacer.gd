@@ -20,14 +20,107 @@ func initialize(factory_scene: PackedScene, file_data, factory_array: Array):
 	_file_data = file_data;
 	_factory_array = factory_array;
 
+# --- El precio de construir (Costes M1) ---
+# `cost` es OPCIONAL en el JSON y su ausencia significa GRATIS, exactamente el mismo contrato
+# que `materials`: así ni las entradas que no lo declaren ni las factorías que una prueba se
+# invente tienen que enterarse de que existe una economía.
+
+# El coste declarado para `factory_type`, siempre como `material -> cantidad`. Es un
+# diccionario y no un número a propósito: deja la puerta abierta a precios mixtos sin volver a
+# tocar el formato del JSON. Devuelve `{}` para lo que no lo declare, que es lo que hace que
+# «gratis» no necesite un caso aparte en ninguno de los dos de abajo.
+func getCost(factory_type: String) -> Dictionary:
+	var params = _file_data["Factories"].get(factory_type, {});
+	var cost = params.get("cost", null);
+	return cost if cost is Dictionary else {};
+
+# 🔴 Consulta getAvailable() y NUNCA getQuantity(): construir come del excedente y jamás de lo
+# que el almacén aparta para el checkpoint en curso. Es la misma regla que ya siguen las
+# factorías al consumir, y es la que impide colgar la run — gastarse el peaje en un edificio
+# deja un checkpoint que ya no se puede cerrar nunca, y de ahí no se sale produciendo.
+func canAfford(factory_type: String, bag) -> bool:
+	if bag == null:
+		return true;
+	var cost = getCost(factory_type);
+	for material in cost:
+		if bag.getAvailable(material) < int(cost[material]):
+			return false;
+	return true;
+
+# Descuenta el coste. Se llama DENTRO de build() y siempre detrás de canAfford():
+# removeFromBag() corta en 0 y no sabe nada de la reserva, así que cobrar sin comprobar antes
+# se comería el peaje del checkpoint en silencio.
+func payCost(factory_type: String, bag) -> void:
+	if bag == null:
+		return;
+	var cost = getCost(factory_type);
+	for material in cost:
+		bag.removeFromBag(material, int(cost[material]));
+
+# --- La devolución al demoler (Costes M4) ---
+
+# Lo que demoler `fab` devuelve a la bolsa: la MITAD de lo que esa factoría pagó, redondeando
+# hacia abajo. La llama `Main._demolish_at_cell()`, y vive aquí —y no allí— porque es la otra
+# cara de `payCost()`: el precio de una factoría se lee, se cobra y se devuelve en el mismo
+# sitio, que es lo que impide que el día de mañana haya dos ideas distintas de lo que cuesta.
+#
+# 🔴 Se calcula sobre `fab.cost_paid` (lo que se pagó) y NUNCA sobre el `cost` del JSON (lo
+# que vale). Lo que no se pagó no se devuelve: si mirase el precio, demoler el almacén con el
+# que arranca el mapa —gratis, `mapLoader.place_storage()`— soltaría 5 de madera salidas de
+# ninguna parte, y lo mismo cada factoría que la suite coloca sin comprar.
+#
+# Y la mitad, no el todo: devolver el 100 % convierte «colocar y demoler» en un sondeo
+# gratuito del mapa —el mismo agujero que tuvieron las sinergias hasta el 2026-09-17—, y
+# devolver 0 castiga el reset rápido que el GDD promete. Redondeando ABAJO, que es lo que
+# deja el coste impar del lado del jugador que decide y no del que prueba: pagar 5 devuelve 2.
+func getRefund(fab) -> Dictionary:
+	var refund = {};
+	if fab == null or not ("cost_paid" in fab):
+		return refund;
+	for material in fab.cost_paid:
+		# floori() sobre float y no división entera: `int / int` es un aviso del compilador, y
+		# el redondeo que pide el hito es explícitamente hacia abajo, no «el que salga».
+		var half = floori(float(int(fab.cost_paid[material])) / 2.0);
+		# El 0 no se anota: una devolución de nada no es una entrada del diccionario, y así
+		# quien la pinte (el panel de M5) no enseña «devuelve: 0 de madera».
+		if half > 0:
+			refund[material] = half;
+	return refund;
+
 # Coloca una factory en cell y devuelve el nodo instanciado (sin añadirlo al árbol — lo hace el caller).
-func build(factory_type, cell, player_node, bag, tile_map) -> Node:
+# `charge_cost` va al final y con default a `false` porque build() tiene dos clases de llamante
+# y solo una COMPRA: el gesto del jugador (Main._on_factory_chosen(), el único que pasa `true`)
+# paga, mientras que quien monta el mundo o un escenario coloca sin comprar — el almacén con el
+# que arranca el mapa (mapLoader.place_storage(), que el plan deja explícitamente gratis), la
+# suite. Cobrar por defecto le pasaría al jugador la factura del almacén inicial y
+# dejaría sin dinero a decenas de pruebas que no van de economía.
+func build(factory_type, cell, player_node, bag, tile_map, charge_cost: bool = false) -> Node:
+	# El cobro vive aquí dentro para que no haya dos verdades sobre qué cuesta colocar: quien
+	# construye paga en el mismo sitio en que se instancia. Devolver null —y no una factoría a
+	# medio pagar— es la única respuesta posible si al llegar aquí el dinero ya no da.
+	# Lo que de verdad se cobra se APUNTA en la factoría, y de ese recibo sale la devolución al
+	# demolerla (M4, getRefund()). Queda vacío en los dos casos en los que no ha salido dinero
+	# de ninguna bolsa: sin `charge_cost` y sin `bag` —con `bag` nulo payCost() no cobra nada—.
+	var paid_cost = {};
+	if charge_cost:
+		if not canAfford(factory_type, bag):
+			return null;
+		if bag != null:
+			paid_cost = getCost(factory_type).duplicate();
+		payCost(factory_type, bag);
+
 	var params = _file_data["Factories"][factory_type];
 	var adjusted_tick = player_node.getTickForFactory(factory_type, params["tick"]);
 	var adjusted_output = player_node.getOutputForFactory(factory_type, 1);
 	var pollution = float(params.get("pollution", 0.0));
 	var ftype = params.get("type", "production");
 	var w_needed = int(params.get("workers_needed", 0));
+	# `materials` es OPCIONAL en el JSON: solo lo declara la factoría que puede elegir qué
+	# fabricar, que desde Variedad M3 (2026-09-22) es UNA, la `Foundry` con su
+	# `["brick", "glass"]`. Se pasa tal cual —`null` incluido—, porque
+	# el fallback a `[material]` lo aplica factoryData.initialize(): así vale también para quien
+	# construye factorías sin pasar por aquí (hoy, las pruebas de tests/run_tests.gd).
+	var materials = params.get("materials", null);
 
 	var fabrica = _factory_scene.instantiate();
 	fabrica.initialize(
@@ -38,9 +131,11 @@ func build(factory_type, cell, player_node, bag, tile_map) -> Node:
 		adjusted_output,
 		pollution,
 		ftype,
-		w_needed
+		w_needed,
+		materials
 	);
 	fabrica.cell_position = cell;
+	fabrica.cost_paid = paid_cost;
 
 	var tile_center = tile_map.map_to_local(cell);
 	var tile_size = tile_map.tile_set.tile_size;
