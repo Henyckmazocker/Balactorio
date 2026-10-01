@@ -29,6 +29,9 @@ const TEXTS := {
 	"input":   "⚠ Parada: sin insumo — tiéndele cinta de entrada",
 	"output":  "⚠ Parada: salida llena — tiéndele cinta de salida",
 	"choke":   "⚠ Parada: la ahoga el suelo — limpia la casilla",
+	# La única sin arreglo en el mapa: la tormenta escampa sola (Eventos Climáticos M3). La
+	# acción es no gastar la reacción en ella —desmontarla o tenderle cinta no la hará producir—.
+	"storm":   "⚠ Parada: tormenta en la zona — escampa sola",
 };
 
 # La razón que se ENSEÑA ahora mismo, que no siempre es la que el modelo lleva escrita.

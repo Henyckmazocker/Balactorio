@@ -1,8 +1,15 @@
 extends CanvasLayer
 
 signal factory_chosen(type, cell);
+# Se cierra el radial (Plan «Analítica de Runs», M3): `built` true si se eligió una opción, false
+# si se cerró con el fondo o con ESC. Sale UNA vez por menú, siempre antes de su `queue_free()`:
+# el menú no conoce la analítica, `Main` la traduce a `radial_closed`.
+signal closed(built: bool);
 
 var _cell = Vector2i(0, 0);
+# Ya se emitió `closed`. `queue_free()` es diferido: el nodo sigue recibiendo eventos el resto del
+# frame, y un ESC y un click de fondo en el mismo frame lo cerrarían dos veces.
+var _closed = false;
 
 # El botón ya no se dimensiona por su propio texto: el contenido son labels hijas, para poder
 # pintar la sinergia en verde sin teñir también el nombre (que lleva el color de contaminación).
@@ -46,6 +53,12 @@ const PRICE_COLOR = Color(0.85, 0.82, 0.6);
 # Y el precio que no se puede pagar, en rojo: es el «no» que ya usa el panel para la factoría
 # inactiva. Va acompañado de un «✖» a propósito, para que el rechazo no dependa solo del color.
 const UNAFFORDABLE_PRICE_COLOR = Color(1.0, 0.45, 0.45);
+# El aviso de la CASILLA (Legibilidad M2): lo que el pantano o la tierra quemada le van a hacer a
+# lo que se construya encima. Es el mismo rojo que el precio impagable, y por lo mismo va con su
+# propio marcador —«⚠»— para que no dependa solo del color. Cuando la casilla FAVORECE (un
+# pantano bajo una restauradora limpia más) la línea no usa este color sino el de las sinergias,
+# que es lo que es para el jugador: algo que se gana construyendo aquí.
+const TILE_WARNING_COLOR = Color(1.0, 0.45, 0.45);
 # Lo que atenúa una opción impagable: se baja el ALFA y se conserva el tono, así que el código de
 # color de arriba sigue leyéndose (apagado) en vez de quedar pisado por un gris plano.
 const DIMMED_ALPHA = 0.35;
@@ -195,6 +208,10 @@ func _button_lines(factory_name, file_data, synergy_preview, affordable) -> Dict
 	# Lo que se gana construyendo AQUÍ, que es la decisión que este menú toma.
 	for texto in _synergy_lines(synergy_preview.get(factory_name, {})):
 		lines.append([texto, SYNERGY_COLOR]);
+	# Y lo que la CASILLA le hace (Legibilidad M2), al final: cierra la lectura igual que las
+	# sinergias, pero no se mezcla con ellas porque su color depende de la factoría.
+	for par in _tile_lines(synergy_preview.get(factory_name, {}), pollution_val):
+		lines.append(par);
 
 	return {
 		"lines": lines,
@@ -343,14 +360,69 @@ func _synergy_lines(preview) -> Array:
 		lines.append("✦ Mejora " + str(gives) + (" vecina" if gives == 1 else " vecinas"));
 	return lines;
 
+# 🔴 LO QUE LA CASILLA LE HACE A LO QUE SE CONSTRUYE ENCIMA (Legibilidad M2, 2026-09-23). Redacta
+# las dos claves `tile_*` de `factoryPlacer.preview_synergies()` y devuelve pares texto/color,
+# no solo texto como `_synergy_lines()`, porque aquí el color NO es fijo:
+#
+# - El `pollution_multiplier` del pantano multiplica `pollutionAmount` en build(), y ese valor
+#   lleva SIGNO: sobre una productora ensucia ×1.5 —«⚠ Pantano ×1.5», en rojo— y sobre una
+#   restauradora, cuyo `pollution` es negativo, LIMPIA ×1.5 —«✦ Limpieza ×1.5», en el verde de
+#   las sinergias—. Se decide por el signo de `pollution_val` y no por el `type` del JSON porque
+#   el signo es literalmente lo que build() multiplica: con él, una factoría de contaminación
+#   0 (el `WorkerCamp`) no anuncia nada, que es exactamente lo que el pantano le hace.
+# - El `on_build_pollution` de la tierra quemada lo suma Main._on_factory_chosen() a la CELDA,
+#   sea lo que sea lo que se construya: para cualquiera es rojo, «⚠ Quemada +10».
+#
+# 🔴 Los textos son así de cortos por el ancho: una Label no se recorta y `BUTTON_WIDTH` vale
+# 112. Medidos con la fuente del juego a tamaño 11: «⚠ Pantano ×1.5» 83 px, «✦ Limpieza ×1.5»
+# 85, «⚠ Quemada +10» 87 —ninguno pasa de los 101 de «✦ Mejora 2 vecinas»—. Las redacciones
+# largas del plan («Pantano: ×1.5 contaminación», «Tierra quemada: +10 al construir») no caben,
+# y «✦ Pantano: limpia ×1.5» tampoco (121). Los números salen del JSON vía el preview, no de aquí.
+func _tile_lines(preview, pollution_val) -> Array:
+	var lines = [];
+	if preview == null or preview.is_empty():
+		return lines;
+	var mult = float(preview.get("tile_pollution_mult", 1.0));
+	if mult != 1.0 and pollution_val != 0.0:
+		# Lo que el multiplicador hace al MÓDULO: > 1 agranda lo que la factoría ya hacía. Si
+		# contamina, eso es malo; si limpia, es bueno. (Un < 1 lo invertiría, y por eso el
+		# signo del efecto se decide con los dos factores y no solo con el de la factoría.)
+		# El marcador va con el color: «⚠» con el rojo, «✦» con el verde de las sinergias.
+		var empeora = (pollution_val > 0.0) == (mult > 1.0);
+		var palabra = "Pantano ×" if pollution_val > 0.0 else "Limpieza ×";
+		lines.append([("⚠ " if empeora else "✦ ") + palabra + _num_text(mult),
+			TILE_WARNING_COLOR if empeora else SYNERGY_COLOR]);
+	var on_build = float(preview.get("tile_on_build_pollution", 0.0));
+	if on_build > 0.0:
+		lines.append(["⚠ Quemada +" + _num_text(on_build), TILE_WARNING_COLOR]);
+	return lines;
+
+# Un número del JSON sin el «.0» que `str()` le pega a todo float (`JSON.parse_string()` devuelve
+# todo número como float): «+10», no «+10.0»; y con dos decimales como mucho, igual que el
+# «✦ Contam. ×1.25» de las sinergias.
+func _num_text(v: float) -> String:
+	if is_equal_approx(v, round(v)):
+		return str(int(round(v)));
+	return str(snapped(v, 0.01));
+
 func _on_factory_pressed(factory_type):
+	if _closed:
+		return;
 	factory_chosen.emit(factory_type, _cell);
-	queue_free();
+	_close(true);
 
 func _on_bg_input(event):
 	if event is InputEventMouseButton and event.pressed:
-		queue_free();
+		_close(false);
 
 func _unhandled_input(event):
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-		queue_free();
+		_close(false);
+
+# El único camino de cierre del propio menú: emite `closed` una sola vez y libera el nodo.
+func _close(built: bool) -> void:
+	if _closed:
+		return;
+	_closed = true;
+	closed.emit(built);
+	queue_free();

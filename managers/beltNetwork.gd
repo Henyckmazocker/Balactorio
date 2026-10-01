@@ -670,3 +670,38 @@ func draw_belts(target):
 				p_out - forward * 9.0 + side * 5.0,
 				p_out - forward * 9.0 - side * 5.0,
 			]), Color(0.95, 0.75, 0.15, 1.0));
+
+
+# ---------- Serialización de Run (M1) ----------
+
+const RunSave = preload("res://managers/runSave.gd");
+
+# La red como lista de segmentos, en el orden en que se tendieron. Celda y direcciones como
+# "x,y" (las direcciones tienen componentes negativas: "-1,0"). `_factory_index` no se guarda:
+# es una cache que invalidate_factory_index() reconstruye sola.
+func snapshot() -> Array:
+	var tramos = [];
+	for cell in belts:
+		var seg = belts[cell];
+		tramos.append({
+			"cell": RunSave.cell_key(seg.cell),
+			"dir_in": RunSave.cell_key(seg.dir_in),
+			"dir_out": RunSave.cell_key(seg.dir_out),
+			"filter": seg.filter,
+		});
+	return tramos;
+
+# Serialización de Run (M2): el espejo de snapshot(). Reemplaza la red entera, en el orden en que
+# se guardó —es el de tendido, y snapshot() la vuelve a recorrer en ese orden—, sin cobrar nada
+# (la cinta ya se pagó) ni pasar por place_drag(), que re-trazaría el camino en vez de copiar las
+# direcciones guardadas. Invalida la cache de factorías, porque al reanudar las factorías se
+# acaban de reconstruir, y repinta el overlay si ya existe. No emite `belt_network_changed`: no es
+# un cambio del jugador, es la red que ya había.
+func restore(tramos: Array) -> void:
+	belts = {};
+	for t in tramos:
+		var cell = RunSave.parse_cell(String(t.get("cell", "0,0")));
+		belts[cell] = BeltSegment.new(cell, RunSave.parse_cell(String(t.get("dir_in", "0,0"))),
+			RunSave.parse_cell(String(t.get("dir_out", "0,0"))), String(t.get("filter", "")));
+	invalidate_factory_index();
+	_redraw();

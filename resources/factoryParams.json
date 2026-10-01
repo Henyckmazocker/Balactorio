@@ -276,6 +276,36 @@
 		"lava":     { "buildable": false, "color": [1.0, 0.3, 0.0, 1], "passive_pollution_per_tick": 1.0,
 		              "degraded": true, "sprite_source_id": 4, "overlay_layer": false, "adjacency_bonus": {} }
 	},
+	"WeatherEvents": {
+		"drought": {
+			"name": "Sequía",
+			"duration": 30.0,
+			"zone_size": [5, 4],
+			"pollution_multiplier": 1.5,
+			"color": [0.85, 0.65, 0.20, 0.35]
+		},
+		"rain": {
+			"name": "Lluvia",
+			"duration": 25.0,
+			"zone_size": [5, 4],
+			"passive_pollution_per_tick": -0.4,
+			"color": [0.25, 0.55, 0.85, 0.35]
+		},
+		"storm": {
+			"name": "Tormenta",
+			"duration": 15.0,
+			"zone_size": [4, 3],
+			"halts_production": true,
+			"color": [0.45, 0.45, 0.60, 0.40]
+		},
+		"wind": {
+			"name": "Viento",
+			"duration": 20.0,
+			"zone_size": [6, 5],
+			"contagion_direction": [1, 0],
+			"color": [0.70, 0.80, 0.75, 0.30]
+		}
+	},
 	"Maps": [
 		{
 			"id": "forest_01",

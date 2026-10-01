@@ -13,6 +13,11 @@ extends SceneTree
 # Las capturas salen en `res://capturas/`. El snap de Godot no puede escribir en /tmp, así que
 # viven dentro del proyecto y se sacan de ahí al terminar.
 
+# 🔴 La run guardada de David vive en `user://run.json`, el mismo `user://` que el de este conductor:
+# `reset()`, ganar, perder y el autoguardado de cada 20 s lo pisarían o lo borrarían. Se redirige
+# ANTES de instanciar Main, igual que la suite (Plan «Serialización de Run»).
+const RunSave = preload("res://managers/runSave.gd");
+
 const MAPA = "forest_01";
 const PAQUETE = "standard";
 const SEMILLA = 20260920;
@@ -37,6 +42,7 @@ func _process(_delta):
 	if _hecho:
 		return false;
 	_hecho = true;
+	RunSave.default_path = "user://ver_run.json";
 	_todo();
 	return false;
 

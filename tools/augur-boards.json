@@ -1,0 +1,211 @@
+{
+  "_comment": "Tableros de Augur que sube tools/augur-setup.sh (Plan «Analítica de Runs», «Tableros» y M5). Cada gráfica es {title, definition, note?} con la ChartDefinition v1 de Augur. El script busca el tablero por nombre y la gráfica por título: cambiar un título crea una gráfica nueva y deja la vieja. Regla: cada pregunta sobre UN evento; cada avg lleva al lado un count del mismo evento, misma agrupación y mismo where, porque el n de Augur cuenta sesiones y no filas.",
+  "boards": [
+    {
+      "name": "Embudo de la run",
+      "charts": [
+        {
+          "title": "Runs por checkpoints alcanzados y resultado",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "run_end",
+                         "x": {"kind": "prop", "prop": "checkpoints"},
+                         "series": {"kind": "prop", "prop": "result"}, "display": "bar"}
+        },
+        {
+          "title": "Abandonos por pantalla abierta",
+          "note": "Desde 2026-10-01 cerrar la ventana con la run guardada es `suspend`, no `abandon`: aquí queda reiniciar con R. Los cierres están en «Suspensiones por pantalla abierta».",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "run_end",
+                         "where": [{"prop": "result", "op": "eq", "value": "abandon"}],
+                         "x": {"kind": "prop", "prop": "screen"}, "display": "bar"}
+        },
+        {
+          "title": "Suspensiones por pantalla abierta",
+          "note": "Cerrar la ventana con la run guardada (`suspend`). Si se continuó, el run_start siguiente lleva su run_id en `resumed_from`.",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "run_end",
+                         "where": [{"prop": "result", "op": "eq", "value": "suspend"}],
+                         "x": {"kind": "prop", "prop": "screen"}, "display": "bar"}
+        },
+        {
+          "title": "Duración media de la run (ms) por resultado",
+          "note": "Media por fila de run_end. El n de Augur cuenta sesiones: el recuento de runs está en «Runs por resultado».",
+          "definition": {"v": 1, "source": "event", "metric": "avg", "event": "run_end", "property": "duration_ms",
+                         "x": {"kind": "prop", "prop": "result"}, "display": "bar"}
+        },
+        {
+          "title": "Runs por resultado",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "run_end",
+                         "x": {"kind": "prop", "prop": "result"}, "display": "bar"}
+        },
+        {
+          "title": "Runs empezadas por día",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "run_start",
+                         "x": {"kind": "time", "interval": "day"}, "display": "line"}
+        }
+      ]
+    },
+    {
+      "name": "Bloqueos",
+      "charts": [
+        {
+          "title": "Radial cerrado construyendo (tasa por día)",
+          "note": "Media de radial_closed.built (0/1). El recuento de cierres está en «Cierres del radial por día».",
+          "definition": {"v": 1, "source": "event", "metric": "avg", "event": "radial_closed", "property": "built",
+                         "x": {"kind": "time", "interval": "day"}, "display": "line"}
+        },
+        {
+          "title": "Cierres del radial por día",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "radial_closed",
+                         "x": {"kind": "time", "interval": "day"}, "display": "line"}
+        },
+        {
+          "title": "Clicks rechazados por tipo de casilla",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "click_rejected",
+                         "x": {"kind": "prop", "prop": "tile"}, "display": "bar"}
+        },
+        {
+          "title": "Cintas rechazadas por motivo",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "belt_rejected",
+                         "x": {"kind": "prop", "prop": "reason"}, "display": "bar"}
+        },
+        {
+          "title": "Inactividad media (s) por checkpoint",
+          "note": "Media de run_sample.idle_s. El recuento de muestras está en «Muestras de estado por checkpoint».",
+          "definition": {"v": 1, "source": "event", "metric": "avg", "event": "run_sample", "property": "idle_s",
+                         "x": {"kind": "prop", "prop": "checkpoint"}, "display": "bar"}
+        },
+        {
+          "title": "Muestras de estado por checkpoint",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "run_sample",
+                         "x": {"kind": "prop", "prop": "checkpoint"}, "display": "bar"}
+        },
+        {
+          "title": "Factorías paradas por cuello de botella (suma de muestras)",
+          "definition": {"v": 1, "source": "event", "metric": "sum", "event": "run_sample", "property": "blocked_choke",
+                         "x": {"kind": "prop", "prop": "checkpoint"}, "display": "bar"}
+        },
+        {
+          "title": "Factorías paradas sin insumo (suma de muestras)",
+          "definition": {"v": 1, "source": "event", "metric": "sum", "event": "run_sample", "property": "blocked_input",
+                         "x": {"kind": "prop", "prop": "checkpoint"}, "display": "bar"}
+        },
+        {
+          "title": "Factorías paradas con la salida llena (suma de muestras)",
+          "definition": {"v": 1, "source": "event", "metric": "sum", "event": "run_sample", "property": "blocked_output",
+                         "x": {"kind": "prop", "prop": "checkpoint"}, "display": "bar"}
+        },
+        {
+          "title": "Factorías paradas sin workers (suma de muestras)",
+          "definition": {"v": 1, "source": "event", "metric": "sum", "event": "run_sample", "property": "blocked_workers",
+                         "x": {"kind": "prop", "prop": "checkpoint"}, "display": "bar"}
+        },
+        {
+          "title": "Puntos muertos por desenlace",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "deadlock_closed",
+                         "x": {"kind": "prop", "prop": "outcome"}, "display": "bar"}
+        }
+      ]
+    },
+    {
+      "name": "Balance",
+      "charts": [
+        {
+          "title": "Runs por balance y resultado",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "run_end",
+                         "x": {"kind": "prop", "prop": "balance_id"},
+                         "series": {"kind": "prop", "prop": "result"}, "display": "bar"}
+        },
+        {
+          "title": "Checkpoints medios por balance",
+          "note": "Media de run_end.checkpoints. El recuento de runs está en «Runs por balance».",
+          "definition": {"v": 1, "source": "event", "metric": "avg", "event": "run_end", "property": "checkpoints",
+                         "x": {"kind": "prop", "prop": "balance_id"}, "display": "bar"}
+        },
+        {
+          "title": "Runs por balance",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "run_end",
+                         "x": {"kind": "prop", "prop": "balance_id"}, "display": "bar"}
+        },
+        {
+          "title": "Pico medio de contaminación por balance",
+          "note": "Media de run_end.peak_pollution. El recuento de runs está en «Runs por balance».",
+          "definition": {"v": 1, "source": "event", "metric": "avg", "event": "run_end", "property": "peak_pollution",
+                         "x": {"kind": "prop", "prop": "balance_id"}, "display": "bar"}
+        },
+        {
+          "title": "Madera sobrante media al acabar por resultado",
+          "note": "Media de run_end.left_wood: en una partida humana el sobrante es dato. El recuento de runs está en «Runs por resultado».",
+          "definition": {"v": 1, "source": "event", "metric": "avg", "event": "run_end", "property": "left_wood",
+                         "x": {"kind": "prop", "prop": "result"}, "display": "bar"}
+        },
+        {
+          "title": "Runs por resultado",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "run_end",
+                         "x": {"kind": "prop", "prop": "result"}, "display": "bar"}
+        }
+      ]
+    },
+    {
+      "name": "Cartas y edificios",
+      "charts": [
+        {
+          "title": "Tasa de elección por carta",
+          "note": "Media de card_offered.chosen (0/1) = elegida / ofrecida. El recuento de ofertas está en «Veces ofrecida por carta».",
+          "definition": {"v": 1, "source": "event", "metric": "avg", "event": "card_offered", "property": "chosen",
+                         "x": {"kind": "prop", "prop": "card"}, "display": "bar"}
+        },
+        {
+          "title": "Veces ofrecida por carta",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "card_offered",
+                         "x": {"kind": "prop", "prop": "card"}, "display": "bar"}
+        },
+        {
+          "title": "Veces elegida por carta",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "card_offered",
+                         "where": [{"prop": "chosen", "op": "eq", "value": 1}],
+                         "x": {"kind": "prop", "prop": "card"}, "display": "bar"}
+        },
+        {
+          "title": "Factorías construidas por tipo",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "factory_built",
+                         "x": {"kind": "prop", "prop": "factory"}, "display": "bar"}
+        },
+        {
+          "title": "Factorías demolidas por tipo",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "factory_demolished",
+                         "x": {"kind": "prop", "prop": "factory"}, "display": "bar"}
+        },
+        {
+          "title": "Tier medio por checkpoint",
+          "note": "Media de checkpoint_reached.tier. El recuento está en «Checkpoints cerrados por número».",
+          "definition": {"v": 1, "source": "event", "metric": "avg", "event": "checkpoint_reached", "property": "tier",
+                         "x": {"kind": "prop", "prop": "checkpoint"}, "display": "bar"}
+        },
+        {
+          "title": "Checkpoints cerrados por número",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "checkpoint_reached",
+                         "x": {"kind": "prop", "prop": "checkpoint"}, "display": "bar"}
+        }
+      ]
+    },
+    {
+      "name": "Clima",
+      "charts": [
+        {
+          "title": "Climas por tipo",
+          "definition": {"v": 1, "source": "event", "metric": "count", "event": "weather_started",
+                         "x": {"kind": "prop", "prop": "weather"}, "display": "bar"}
+        },
+        {
+          "title": "Probabilidad media de la tirada por clima",
+          "note": "Media de weather_started.chance: la probabilidad con la que salía la tirada (crece con el pico de contaminación). El recuento está en «Climas por tipo».",
+          "definition": {"v": 1, "source": "event", "metric": "avg", "event": "weather_started", "property": "chance",
+                         "x": {"kind": "prop", "prop": "weather"}, "display": "bar"}
+        },
+        {
+          "title": "Factorías paradas por tormenta (suma de muestras)",
+          "definition": {"v": 1, "source": "event", "metric": "sum", "event": "run_sample", "property": "blocked_storm",
+                         "x": {"kind": "prop", "prop": "checkpoint"}, "display": "bar"}
+        }
+      ]
+    }
+  ]
+}

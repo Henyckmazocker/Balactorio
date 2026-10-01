@@ -6,6 +6,12 @@ extends Node
 signal checkpoint_reached(offered_upgrade_ids, rewards, granted_upgrade_ids);
 signal run_won(stats);
 signal run_lost(stats);
+# La ventana del punto muerto, para la analítica (Plan «Analítica de Runs», M2): se abre cuando
+# `deadlock_timer` pasa de 0 a abierto y se cierra cuando vuelve a 0 (`lost = false`) o cuando la
+# run se pierde por ella (`lost = true`, justo ANTES de `run_lost`, con la run aún viva). `secs`
+# es el `run_time` que ha durado abierta.
+signal deadlock_opened();
+signal deadlock_closed(secs, lost);
 
 var checkpoints = [];
 var current_checkpoint_index = 0;
@@ -54,6 +60,24 @@ var last_seen_pollution = 0.0;
 # 0.0 en el frame en que se abre, retrasa la ventana un frame en un mapa que al arrancar la
 # run ya no tuviera ni una casilla libre: no existe, y aunque existiera no cambia nada.
 var deadlock_timer = 0.0;
+# Si la ventana ya se anunció con `deadlock_opened`. Va aparte de `deadlock_timer` porque al
+# perder el timer se queda como está (lo leen el HUD y la suite) y el cierre no puede salir dos
+# veces: una con `lost` y otra al resetear.
+var _deadlock_announced = false;
+# El tier y el ritmo del último checkpoint cerrado, para el `checkpoint_reached` de la analítica
+# (M2). Se escriben justo antes de `checkpoint_reached.emit`; `last_segment_rate` es lo pendiente
+# del tramo sobre la integral del techo (-1.0 sin integral), el valor en que desemboca
+# `segmentLiveRate()` al cerrar, calculado antes de que `_reset_capacity()` la ponga a cero.
+var last_tier := 0;
+var last_segment_rate := 0.0;
+# Clima (Plan «Eventos Climáticos», M5). El weatherManager de ESTA run, inyectado por
+# Main._start_game() con setWeatherManager(); de él lee el HUD los eventos vivos cada frame.
+# Sin inyectar —la suite monta gameManagers sueltos— el HUD es exactamente el de antes.
+var weather_manager = null;
+# El aviso breve de FIN: qué evento terminó y en qué `run_time`. Lo escribe SOLO
+# _on_weather_ended(), conectado a la señal `weather_ended` del manager; el HUD solo lo lee.
+var _weather_end_id = "";
+var _weather_end_at = -1.0;
 
 # Fracción del techo de tu propia línea que hay que sostener para merecer la recompensa
 # potente. El listón va en el hueco entre una línea alimentada, pegada y con los workers
@@ -62,6 +86,34 @@ var deadlock_timer = 0.0;
 # M7 vino a quitar; subirlo deja sin él incluso a quien juega bien. Valor PROVISIONAL:
 # salió de mediciones defectuosas (retiradas el 2026-09-23) y se supone incorrecto.
 const TIER2_EFFICIENCY = 0.55;
+
+# Segundos de tramo en que el HUD calla el rendimiento de línea (Legibilidad M3). El parcial es
+# ACUMULADO y el techo cuenta desde que la factoría existe mientras lo producido llega un tick y
+# una cinta después, así que al arrancar el tramo sale sesgado a la baja: en la run de referencia
+# de M0 tardó de 18 s a varios minutos en acercarse al valor final. 20 s tapa lo peor de ese
+# arranque sin dejar al jugador medio tramo a ciegas; lo que sobra del sesgo lo absorben los
+# márgenes anchos de LINE_STATE_MARGIN.
+const WARMUP_SECONDS: float = 20.0;
+
+# Medio ancho de la franja «ajustada» del semáforo, alrededor de TIER2_EFFICIENCY. Semáforo y no
+# porcentaje porque M0 midió que el número miente durante decenas de segundos pero su SIGNO
+# frente al listón acierta el tier: tres estados enseñan justo lo que acierta. Los cortes se
+# derivan de TIER2_EFFICIENCY y no se escriben sueltos porque ese listón es provisional: si se
+# mueve, el semáforo se mueve con él.
+const LINE_STATE_MARGIN: float = 0.10;
+
+# La sección del semáforo. El « · » con aire la separa del progreso sin confundirse con el
+# «  |  » de la cola de contaminación, que es otra cosa (el estado del mapa, no de la línea).
+const LINE_STATE_TEXT = "   ·   Línea: %s";
+
+# Cuánto se queda en el HUD el aviso de que un evento de clima ha TERMINADO. Corto a propósito:
+# lo que de verdad anuncia el fin es que la zona tintada desaparece del mapa; el texto solo
+# confirma lo que ya se ha visto, y es lo primero que se cae si la línea no da para más.
+const WEATHER_END_NOTICE_SECS = 4.0;
+# Separadores del aviso de clima: « · » entre eventos (como el semáforo, «más de lo mismo») y
+# el «  |  » de siempre entre el aviso y el progreso, igual que el aviso de punto muerto.
+const WEATHER_SEPARATOR = "  ·  ";
+const WEATHER_TAIL = "  |  ";
 
 # Segundos seguidos que las tres condiciones del punto muerto tienen que cumplirse a la vez
 # para declarar muerta la run. Lo único que fija el suelo es cuánto tarda LA JUGADA que
@@ -94,10 +146,11 @@ const DEADLOCK_GRACE = 25.0;
 # línea a 1280 px y no hace wrap: lo que no cabe se corta a media palabra y se pierde. El 155
 # sale medido en captura de pantalla —la línea del colapso de M5 tenía ~200 caracteres y se
 # cortaba en `… | Contamin`—, no de una estimación.
-# No lo lee el runtime: recortar el texto sería peor que pasarse, porque lo que se caería es
-# justo lo que el jugador necesita leer. Lo lee la PRUEBA de longitud de la suite, que es la
-# única forma de que esto no vuelva a romperse en headless, que es donde se rompió: mirando
-# el juego en pantalla se ve, ejecutando la suite entera no.
+# Desde Legibilidad M3 lo hace cumplir getObjectiveText() en runtime, recortando POR PRIORIDAD
+# y no a ciegas: con el rendimiento de línea la línea tiene una sección más, y un corte ciego
+# por la derecha se comería justo lo que el jugador necesita leer. La prueba de longitud de la
+# suite sigue siendo la que avisa si algún texto nuevo obliga a recortar lo que no debe:
+# mirando el juego en pantalla se ve, ejecutando la suite entera no.
 const HUD_MAX_CHARS = 155;
 
 func initialize(fileData):
@@ -129,6 +182,21 @@ func setFactories(array):
 # y cambian con cada mapa.
 func setTileMap(node):
 	tile_map_node = node;
+
+# Cuarto trozo de estado vivo, para el aviso de clima del HUD (M5). El HUD lee `active` del
+# manager directamente cada frame —como lee `deadlock_timer` para el aviso de punto muerto—
+# en vez de llevar una copia al día con `weather_started`: el tiempo restante cambia en cada
+# frame y ninguna señal lo trae, así que una copia sería otra lista que mantener y que podría
+# discrepar del mapa. La señal SÍ hace falta para el FIN: cuando el evento sale de `active`
+# ya no queda nada que leer, así que Main conecta `weather_ended` a _on_weather_ended().
+func setWeatherManager(wm):
+	weather_manager = wm;
+
+# Anota el fin para el aviso breve. Es un manejador de señal, no una lectura del HUD: aquí sí
+# se escribe estado. Solo se recuerda el último fin, que es lo que cabe en la línea.
+func _on_weather_ended(id):
+	_weather_end_id = id;
+	_weather_end_at = run_time;
 
 func _process(delta):
 	if active:
@@ -162,6 +230,10 @@ func update(bag, pollution_manager = null):
 				var segment_time = run_time - last_checkpoint_time;
 				var tier = _evaluate_performance(cp, segment_time, segment_start_stock,
 					_segment_rate());
+				# Para la analítica (M2): el cociente del tramo cerrado, tomado aquí porque dos
+				# líneas más abajo `_reset_capacity()` y el nuevo `segment_start_stock` lo borran.
+				var closed_rate = _pending_units(cp, segment_start_stock) / segment_capacity_area \
+					if segment_capacity_area > 0.0 else -1.0;
 				last_checkpoint_time = run_time;
 				current_checkpoint_index += 1;
 				# El tramo siguiente mide su línea desde cero: arrastrar la media del
@@ -190,6 +262,8 @@ func update(bag, pollution_manager = null):
 					# pantalla ya están aplicadas y serían cartas muertas.
 					var granted = _granted_upgrades();
 					active = false;
+					last_tier = tier;
+					last_segment_rate = float(closed_rate);
 					checkpoint_reached.emit(_pick_upgrades(3, tier, granted), rewards, granted);
 	# Fase de restauración: esperar a que la contaminación baje. Es el único punto del que
 	# sale la victoria, también el de la producción que acaba de terminar con el mapa limpio.
@@ -396,7 +470,7 @@ func _evaluate_deadlock(bag, pollution_manager):
 	# las pruebas que llaman update(bag) a secas — y el de la partida hasta que Main inyecta
 	# el TileMap—: callar es lo correcto, matar a ciegas no.
 	if pollution_manager == null or tile_map_node == null or not is_instance_valid(tile_map_node):
-		deadlock_timer = 0.0;
+		_close_deadlock_window();
 		return;
 	# 1. No se ha producido ni una unidad de lo que el checkpoint pendiente exige. Se mide
 	#    mirando la bolsa y NO _installed_rate(), que suma el techo de toda factoría que
@@ -413,7 +487,7 @@ func _evaluate_deadlock(bag, pollution_manager):
 	var cleaned = pollution < last_seen_pollution - 0.0001;
 	last_seen_pollution = pollution;
 	if produced or cleaned:
-		deadlock_timer = 0.0;
+		_close_deadlock_window();
 		return;
 	# 3. No queda ninguna casilla construible. Va la última y solo cuando las dos baratas ya
 	#    se cumplen porque es la cara: recorre el mapa entero preguntando canPlaceFactory(),
@@ -423,11 +497,14 @@ func _evaluate_deadlock(bag, pollution_manager):
 	#    evaluación, así que no se espacia: un punto muerto evaluado a saltos daría avisos que
 	#    parpadean.
 	if tile_map_node.hasBuildableCell(factory_nodes):
-		deadlock_timer = 0.0;
+		_close_deadlock_window();
 		return;
 	if deadlock_timer <= 0.0:
 		# La ventana se abre ahora: el primer frame en punto muerto no gasta gracia.
 		deadlock_timer = run_time;
+		if deadlock_timer > 0.0 and not _deadlock_announced:
+			_deadlock_announced = true;
+			deadlock_opened.emit();
 		return;
 	if run_time - deadlock_timer < DEADLOCK_GRACE:
 		return;
@@ -435,6 +512,9 @@ func _evaluate_deadlock(bag, pollution_manager):
 	# sale por su guardia de arriba en todas las llamadas siguientes. Es la misma disciplina
 	# de _triggerWin(), que la aprendió del run_won que se emitía dos veces.
 	active = false;
+	if _deadlock_announced:
+		_deadlock_announced = false;
+		deadlock_closed.emit(run_time - deadlock_timer, true);
 	run_lost.emit({
 		"time": run_time,
 		"checkpoints": current_checkpoint_index,
@@ -472,6 +552,14 @@ func _pending_quantity(bag):
 func _reset_deadlock():
 	last_pending_quantity = 0;
 	last_seen_pollution = 0.0;
+	_close_deadlock_window();
+
+# Devuelve la ventana a 0 y, si estaba anunciada, emite su cierre como recuperada (M2). Todos los
+# sitios que la cerraban con `deadlock_timer = 0.0` pasan por aquí para que ninguno se lo salte.
+func _close_deadlock_window():
+	if _deadlock_announced:
+		_deadlock_announced = false;
+		deadlock_closed.emit(run_time - deadlock_timer, false);
 	deadlock_timer = 0.0;
 
 func _triggerWin(pollution_manager):
@@ -576,6 +664,56 @@ func _sample_capacity(checkpoint):
 		return;
 	segment_capacity_area += _installed_rate(checkpoint.get("material", "")) * dt;
 	segment_capacity_time += dt;
+
+# El rendimiento parcial del tramo en curso (Legibilidad M0): lo producido desde que arrancó
+# —stock aceptado menos el que ya había— sobre la integral del techo instalado. Es el
+# equivalente en vivo del cociente que juzga `_evaluate_performance()`, así que al cerrar el
+# tramo con el objetivo justo desemboca en `last_segment_rate`. -1.0 cuando no hay número:
+# sin integral (arranque del tramo, o ninguna factoría del material) o fuera de la fase de
+# producción. SIN calentamiento a propósito: el `WARMUP_SECONDS` de M3 va encima, en
+# `getLiveRate()`, y lo que la analítica graba con esto (`segment_rate`) es lo que dice cuánto
+# calentamiento hace falta.
+# `bag` es opcional: sin ella se usa la Bag del Player de la run, y sin ninguna de las dos no
+# hay stock que medir.
+func segmentLiveRate(bag = null) -> float:
+	if production_done or current_checkpoint_index >= checkpoints.size():
+		return -1.0;
+	if segment_capacity_area <= 0.0:
+		return -1.0;
+	if bag == null and player_node != null and is_instance_valid(player_node):
+		bag = player_node.get_node_or_null("Bag");
+	if bag == null or not is_instance_valid(bag):
+		return -1.0;
+	return float(_stock_for_current(bag) - segment_start_stock) / segment_capacity_area;
+
+# Lo que el HUD puede enseñar del rendimiento del tramo (Legibilidad M3): segmentLiveRate() con
+# el calentamiento encima. -1.0 durante los primeros WARMUP_SECONDS del tramo, porque ahí el
+# acumulado va sesgado a la baja y enseñarlo castigaría al jugador justo después de construir.
+# El tramo se cuenta como el resto de la partida, `run_time − last_checkpoint_time`, así que la
+# pantalla de mejora (que congela run_time) no se come el calentamiento.
+func getLiveRate(bag = null) -> float:
+	if run_time - last_checkpoint_time < WARMUP_SECONDS:
+		return -1.0;
+	return segmentLiveRate(bag);
+
+# El semáforo del HUD: "" cuando no hay número que enseñar (nada es mejor que un estado que
+# miente), y si no «floja» / «ajustada» / «sobrada» según dónde cae el parcial frente a
+# TIER2_EFFICIENCY ± LINE_STATE_MARGIN. Palabras cortas porque cada carácter sale de
+# HUD_MAX_CHARS. Solo lectura: el HUD lo pide cada frame.
+func getLineState(bag = null) -> String:
+	return _lineStateFor(getLiveRate(bag));
+
+# Los cortes, aparte para poder probarlos en sus bordes exactos sin fabricar un stock y una
+# integral cuyo cociente dé justo ese float. Cerrado por abajo en cada franja: el borde
+# inferior de «ajustada» ya es «ajustada» y el de «sobrada» ya es «sobrada».
+func _lineStateFor(rate: float) -> String:
+	if rate < 0.0:
+		return "";
+	if rate < TIER2_EFFICIENCY - LINE_STATE_MARGIN:
+		return "floja";
+	if rate < TIER2_EFFICIENCY + LINE_STATE_MARGIN:
+		return "ajustada";
+	return "sobrada";
 
 func _segment_rate():
 	if segment_capacity_time <= 0.0:
@@ -807,9 +945,78 @@ func resume_after_upgrade():
 # tres caminos de salida y el punto muerto puede darse en todos: en la fase de restauración
 # la condición 1 se cumple sola (ver _pending_quantity()), así que ahí es MÁS probable, no
 # menos.
+#
+# Desde Legibilidad M3 además hace cumplir HUD_MAX_CHARS, por prioridad y no por corte ciego:
+#   1. el aviso de punto muerto, que manda sobre todo y nunca se recorta;
+#   2. el progreso del checkpoint (con su peaje y, si toca, la cola de contaminación);
+#   3. el rendimiento de línea, lo primero que se cae: con el aviso de punto muerto abierto NO
+#      se pinta nunca, quepa o no —«no se produce…» junto a «Línea: sobrada» se contradicen
+#      justo cuando la run agoniza (decidido con David, 2026-09-30)—; sin aviso, se prueba la
+#      línea con él y, si no cabe, se pinta sin él.
+# Si ni sin el rendimiento cabe, se recorta el progreso por la derecha con «…», para que lo que
+# se pierda sea lo menos importante y el jugador vea que falta algo.
+#
+# Desde Clima M5 hay un cuarto inquilino, el aviso de clima, y la prioridad queda
+# `deadlock > progreso > clima > línea` (criterio fijado al implementar: el plan solo pedía
+# «por debajo del deadlock»). El progreso del checkpoint no se sacrifica por el clima, que el
+# jugador ya VE en el mapa tintado; el semáforo de línea sí cede ante el clima, porque el clima
+# caduca en segundos y la línea vuelve a salir en cuanto escampa. El clima va DELANTE del
+# progreso, en el hueco del aviso de punto muerto: los dos no coinciden nunca —con la ventana
+# abierta el clima está suspendido (plan B 1) y no se anuncia—, así que la cabeza de la línea es
+# «la alerta del momento». Se prueba en este orden y gana la primera que cabe:
+#   clima entero + progreso con línea → clima entero + progreso → clima con un evento menos
+#   (primero se cae el aviso de fin, luego los eventos más nuevos) … → progreso a secas.
 func getObjectiveText(bag, pollution_manager = null):
 	var warning = _deadlockText();
-	return warning + _progressText(bag, pollution_manager, warning != "");
+	var deadlock_open = warning != "";
+	var state = "" if deadlock_open else getLineState(bag);
+	var items = [] if deadlock_open else _weatherItems();
+	var progress = _progressText(bag, pollution_manager, deadlock_open);
+	var with_line = "";
+	if state != "":
+		with_line = _progressText(bag, pollution_manager, deadlock_open, LINE_STATE_TEXT % state);
+	if not items.is_empty():
+		var weather = WEATHER_SEPARATOR.join(items) + WEATHER_TAIL;
+		if with_line != "" and weather.length() + with_line.length() <= HUD_MAX_CHARS:
+			return weather + with_line;
+		for n in range(items.size(), 0, -1):
+			weather = WEATHER_SEPARATOR.join(items.slice(0, n)) + WEATHER_TAIL;
+			if weather.length() + progress.length() <= HUD_MAX_CHARS:
+				return weather + progress;
+	if with_line != "" and warning.length() + with_line.length() <= HUD_MAX_CHARS:
+		return warning + with_line;
+	return _fitHud(warning, progress);
+
+# Las piezas del aviso de clima, en orden de prioridad: los eventos vivos por orden de
+# nacimiento («Tormenta 12 s») y, al final, el fin reciente («Sequía: fin»). Vacío sin manager
+# o con el clima suspendido (plan B 1: con la ventana de punto muerto abierta no se anuncia
+# nada, igual que no se tiñe). SOLO lectura, como _deadlockText(): se llama cada frame.
+func _weatherItems() -> Array:
+	var items = [];
+	if not is_instance_valid(weather_manager) or weather_manager.isSuspended():
+		return items;
+	var live_ids = {};
+	for ev in weather_manager.active:
+		live_ids[ev.id] = true;
+		# Hacia arriba, como la cuenta atrás del colapso: el último segundo se lee «1 s».
+		items.append("%s %d s" % [_weatherName(ev.id), max(1, int(ceil(ev.remaining)))]);
+	# El fin no se anuncia si el mismo evento ha vuelto a empezar: se contradirían.
+	if _weather_end_id != "" and not live_ids.has(_weather_end_id) and _weather_end_at >= 0.0 \
+			and run_time - _weather_end_at < WEATHER_END_NOTICE_SECS:
+		items.append("%s: fin" % _weatherName(_weather_end_id));
+	return items;
+
+func _weatherName(id) -> String:
+	return str(weather_manager.catalog.get(id, {}).get("name", id));
+
+# Último recurso del presupuesto: el aviso entero y el progreso recortado a lo que quede.
+func _fitHud(warning, progress):
+	if warning.length() + progress.length() <= HUD_MAX_CHARS:
+		return warning + progress;
+	var room = HUD_MAX_CHARS - warning.length() - 1;
+	if room <= 0:
+		return warning.left(HUD_MAX_CHARS);
+	return warning + progress.left(room) + "…";
 
 # Cuenta atrás y motivo, o cadena vacía si no hay ventana abierta. Es SOLO lectura: el HUD
 # la llama cada frame desde Main._process() y quien mueve `deadlock_timer` es
@@ -837,10 +1044,17 @@ func _deadlockText():
 # para cerrar la run— y además la línea es corta (~133 caracteres con el aviso delante, que
 # caben de sobra), así que ahí el aviso se antepone como en M5. Quitarla dejaría al jugador
 # sin saber cuánto le falta justo cuando más lo necesita.
-func _progressText(bag, pollution_manager = null, deadlock_open = false):
+# La etiqueta «Contaminación: » la ponen las DOS llamadas de aquí abajo y no
+# pollutionManager.getStatusText(), que devuelve solo el dato (Legibilidad M1). Antes la traía
+# él y esta rama la envolvía en «Restaurando: », de modo que el HUD de la fase 2 nombraba dos
+# veces el mismo número; el «Restaurando: » sobraba porque «restaurar: ≤ M» ya dice la fase.
+# `line_text` es la sección del semáforo ya formateada (o vacía), y va detrás del peaje y DELANTE
+# de la cola de contaminación: es parte de «cómo va este checkpoint», no del estado del mapa. Solo
+# existe en la fase de producción, que es la única con tramo que medir.
+func _progressText(bag, pollution_manager = null, deadlock_open = false, line_text = ""):
 	if production_done:
 		if pollution_manager:
-			return "Restaurando: %s" % pollution_manager.getStatusText();
+			return "Contaminación: %s" % pollution_manager.getStatusText();
 		return "¡Producción completada!";
 	if current_checkpoint_index >= checkpoints.size():
 		return "¡Producción completada!";
@@ -859,9 +1073,9 @@ func _progressText(bag, pollution_manager = null, deadlock_open = false):
 	var label = cp.get("label", "Objetivo");
 	var pollution_text = "";
 	if pollution_manager and not deadlock_open:
-		pollution_text = "  |  " + pollution_manager.getStatusText();
-	return "%s: %d / %d %s%s%s" % [label, current, cp["quantity"], " o ".join(accepted),
-		_maintenanceText(bag, cp), pollution_text];
+		pollution_text = "  |  Contaminación: " + pollution_manager.getStatusText();
+	return "%s: %d / %d %s%s%s%s" % [label, current, cp["quantity"], " o ".join(accepted),
+		_maintenanceText(bag, cp), line_text, pollution_text];
 
 # El mantenimiento se anuncia ANTES de cobrarse, y con su progreso, no solo con su importe.
 # Es la mitad del requisito del checkpoint: sin verlo, el jugador con los tablones hechos no
@@ -893,9 +1107,56 @@ func _maintenanceText(bag, checkpoint):
 func reset():
 	current_checkpoint_index = 0;
 	run_time = 0.0;
+	_weather_end_id = "";
+	_weather_end_at = -1.0;
 	last_checkpoint_time = 0.0;
 	segment_start_stock = 0;
 	active = true;
 	production_done = false;
 	_reset_capacity();
+	_reset_deadlock();
+
+
+# ---------- Serialización de Run (M1) ----------
+
+# Lo que sobrevive a cerrar el juego. Fuera a propósito: la ventana del punto muerto
+# (`deadlock_timer`, `_deadlock_announced` y sus dos observaciones, `last_pending_quantity` y
+# `last_seen_pollution`) se reinicia al cargar —nadie pierde una run por cerrar el juego—, el
+# aviso de fin de clima (`_weather_end_*`) dura 4 s, y los catálogos y nodos se re-inyectan.
+# Cada número sale con su tipo canónico —int lo que cuenta, float lo que mide— para que
+# restore() fije el mismo y la ida y vuelta sea `==` (M2).
+func snapshot() -> Dictionary:
+	return {
+		"current_checkpoint_index": int(current_checkpoint_index),
+		"run_time": float(run_time),
+		"last_checkpoint_time": float(last_checkpoint_time),
+		"active": bool(active),
+		"production_done": bool(production_done),
+		"segment_start_stock": int(segment_start_stock),
+		"segment_capacity_area": float(segment_capacity_area),
+		"segment_capacity_time": float(segment_capacity_time),
+		"last_capacity_sample": float(last_capacity_sample),
+		"last_tier": int(last_tier),
+		"last_segment_rate": float(last_segment_rate),
+	};
+
+# Serialización de Run (M2): el espejo de snapshot(). `active` vuelve TAL CUAL: false si se
+# guardó con la pantalla de cartas abierta, y la oferta que Main reabre lo devuelve a true por
+# resume_after_upgrade() al elegir, como siempre. La ventana del punto muerto y el aviso de fin
+# de clima se reinician en vez de restaurarse (ver snapshot()). int()/float() porque de JSON
+# (M3) todo número vuelve como float.
+func restore(d: Dictionary) -> void:
+	current_checkpoint_index = int(d.get("current_checkpoint_index", 0));
+	run_time = float(d.get("run_time", 0.0));
+	last_checkpoint_time = float(d.get("last_checkpoint_time", 0.0));
+	active = bool(d.get("active", true));
+	production_done = bool(d.get("production_done", false));
+	segment_start_stock = int(d.get("segment_start_stock", 0));
+	segment_capacity_area = float(d.get("segment_capacity_area", 0.0));
+	segment_capacity_time = float(d.get("segment_capacity_time", 0.0));
+	last_capacity_sample = float(d.get("last_capacity_sample", 0.0));
+	last_tier = int(d.get("last_tier", 0));
+	last_segment_rate = float(d.get("last_segment_rate", 0.0));
+	_weather_end_id = "";
+	_weather_end_at = -1.0;
 	_reset_deadlock();

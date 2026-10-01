@@ -4,11 +4,12 @@
 # Residuos del editor (los `Mai*.tmp` de la raíz volvían solos)
 *.tmp
 
-# Artefactos de export (Project → Export). Ninguno existe todavía:
-# esto es para que no entren el día que se genere la primera build.
+# Artefactos de export (`tools/export.sh`). `export_presets.cfg` SÍ se versiona: no lleva secretos.
 builds/
 export/
-export_presets.cfg
+# La clave de Augur de prod que `tools/export.sh` escribe para meterla en el .pck y borra al salir.
+# Si un export se corta y se queda, esto evita que entre en git.
+augur_release.cfg
 *.pck
 *.exe
 *.x86_64

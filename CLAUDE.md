@@ -38,7 +38,17 @@ El binario del sistema es `godot-4` (snap):
 ```bash
 godot-4 --path .                  # abrir en el editor
 godot-4 --path . res://Main.tscn  # ejecutar la escena principal
+tools/export.sh                   # builds públicas → builds/linux/Balactorio.x86_64 y builds/windows/Balactorio.exe
 ```
+
+`tools/export.sh` *(Plan «Builds Públicas con Consentimiento», M2)* exporta los dos presets de
+`export_presets.cfg` (`Linux` y `Windows Desktop`, x86_64, versionado) con las plantillas **mono**
+4.7.2 del snap, y embebe la clave de Augur de **prod**: la lee de
+`~/.config/augur/balactorio-release.key` (fuera del repo, `chmod 600`; `AUGUR_RELEASE_KEY_FILE`
+apunta a otra), escribe `res://augur_release.cfg`, que `include_filter` mete en el `.pck`, y lo
+**borra al salir** (`trap`, también si el export falla). Sin fichero de clave sale con error y no
+exporta. `augur_release.cfg` y `builds/` están en `.gitignore`. **No arranques la build para
+probar algo**: manda a prod. La de Windows sale sin firmar (SmartScreen avisará).
 
 ## Tests
 
@@ -46,7 +56,7 @@ El proyecto tiene suite propia en `tests/run_tests.gd`. Es un script de `SceneTr
 plugin ni dependencias:
 
 ```bash
-godot-4 --headless --path . --script res://tests/run_tests.gd   # 1023 comprobaciones
+godot-4 --headless --path . --script res://tests/run_tests.gd   # 1582 comprobaciones
 godot-4 --headless --path . --import                            # solo comprueba que importa
 ```
 
@@ -184,6 +194,8 @@ pkill  -x godot-4      # matarlo — ojo: también cierra el editor si lo tienes
 godot-4 --path . --script res://tools/ver_dilema.gd    # CON ventana; deja PNG en capturas/
 godot-4 --path . --script res://tools/ver_cuellos.gd   # CON ventana; los cuatro estados de parada
 godot-4 --path . --script res://tools/ver_variedad.gd  # CON ventana; las siete situaciones de Variedad
+godot-4 --path . --script res://tools/ver_clima.gd    # CON ventana; los cuatro climas, solape, fin y deadlock
+godot-4 --path . --script res://tools/ver_clima.gd -- riesgo_largo  # sequía sobre la línea 300 s, con control
 ```
 
 `ver_variedad.gd` (2026-09-22) es el tercero y monta las **siete** preguntas que la suite no sabe
@@ -222,15 +234,124 @@ Dos trampas que costaron cuatro iteraciones y que valen para **cualquier** condu
 
 ## Arquitectura
 
-- **`Main.gd` / `Main.tscn`** — kernel: instancia y orquesta los managers e inicializa la run. No
-  hay autoloads; los managers son nodos hijos de la escena principal.
+- **`Main.gd` / `Main.tscn`** — kernel: instancia y orquesta los managers e inicializa la run. Los
+  managers son nodos hijos de la escena principal, **no autoloads**. La única excepción es `Augur`
+  (abajo).
+- 🔴 **`Augur` es el ÚNICO autoload, y es un SDK de fuera** *(2026-09-25, M4 del plan «SDK de Godot»
+  de Augur)*: `[autoload] Augur="*res://addons/augur/augur.gd"` en `project.godot`, junto a
+  `config/version="0.1.0"`, que es el `client_version` que se graba. `addons/augur/` es una
+  **copia**: la verdad está en `workspace/augur/sdk/godot/` y se actualiza con
+  `augur/sdk/godot/install.sh <ruta-de-Balactorio>`, que escribe también `addons/augur/VERSION`. **No
+  se edita aquí.** Se enciende en `Main._configure_augur()`, que pide clave y endpoint a
+  `Main._augur_settings(is_template, cfg_path)`. **En el editor** (`not OS.has_feature("template")`)
+  salen del entorno:
+  - `AUGUR_KEY` — la `write_key` del proyecto `balactorio`. **Sin ella no se llama a nada y el SDK
+    no hace nada**: ni escribe en `user://augur/` ni abre red. Por eso la suite (que sí carga los
+    autoloads con `--script`) no se entera. Nunca se escribe en el repo.
+  - `AUGUR_ENDPOINT` — origen sin barra final; por defecto `http://localhost:8897` (Augur de dev).
+  🔴 **En build exportada** (`OS.has_feature("template")`, true también en las debug) *(Plan «Builds
+  Públicas con Consentimiento», M2, 2026-09-30)* el entorno se IGNORA y salen de
+  `res://augur_release.cfg` (`[augur]` `write_key`, `endpoint`), que solo existe dentro del `.pck`
+  porque lo escribe y lo borra `tools/export.sh` (arriba, «Cómo se ejecuta»). Y al revés: en el
+  editor ese `.cfg` se ignora aunque exista, así que desde el editor **nunca** se manda a prod. Una
+  build sin `.cfg` no manda nada.
+  🔴 **El consentimiento lo da el jugador, no el entorno** *(Plan «Builds Públicas con
+  Consentimiento», M1, 2026-09-30; `AUGUR_CONSENT` ya no existe)*: con Augur configurado —`Main`
+  lleva su propio `_augur_enabled`, porque el SDK no expone si lo está— y sin decisión en disco
+  (`Augur.has_consent_decision()`), `Main._ready()` monta `ui/consentScreen.gd` (modo `first_run`,
+  `layer = 25`) **antes** que el menú, y el menú nace en su `decided`. `ui/mainMenu.gd` recibe
+  `augur_enabled` en `initialize()` y solo entonces enseña «Privacidad» bajo «JUGAR», que reabre la
+  pantalla en modo `change` (decisión actual marcada y «Volver» para salir sin cambiar). La
+  pantalla **no llama al SDK**: emite `decided(granted)` y `Main` hace `Augur.set_consent()`
+  (`false` borra `user://augur/sessions/`). Sin `AUGUR_KEY` ni se pregunta ni sale el botón.
+  Con clave y consentimiento, una sesión manda `session_start`/`session_end` (los pone el SDK) y los eventos del
+  catálogo de `managers/analytics.gd` (abajo). Desde M2 del Plan «Analítica de Runs» la run la abre
+  `analytics.begin_run()` al final de `_start_game()` (`run_start` con paquete, mapa de `pick_map()`
+  guardado en `_run_map_id`, `balance_id` y constantes) y la cierra `analytics.end_run()` —vía
+  `Main._end_run()`— en `_on_run_won()`, `_on_run_lost()`, la `R` con run viva y al **cerrar la
+  ventana con run viva** (por la señal `Augur.closing` conectada a `Main._on_app_closing()`, que el
+  SDK emite antes de su `session_end`: el autoload recibe el cierre antes que `Main`). Desde el
+  2026-10-01 cerrar guarda la run y la cierra como `suspend` (o `abandon` si no se pudo escribir), y
+  la run continuada abre `run_start` con `resumed_from` = el `run_id` suspendido. `end_run` es idempotente por run y lee el censo de sus contadores y
+  de la `Bag` antes de preguntar a `Main._run_end_census()` (`belt_cells`, `screen`) por
+  `analytics.census_probe`.
+  La sesión se cierra bien **solo cerrando la ventana** (el SDK retiene el cierre hasta 2 s para
+  subir). El `build_id` hashea `res://` sin `addons/augur/`, así que cambia al tocar un fichero del
+  juego aunque no esté commiteado.
+  🔴 **Nadie llama a `Augur.track` salvo `managers/analytics.gd`** *(Plan «Analítica de Runs», M1,
+  2026-09-30)*: los ganchos llaman a `analytics.track("<evento>", {…})`, y la suite (bloque
+  «Analítica M1») falla si un `.gd` fuera de `analytics.gd` y de `_configure_augur()` llama a
+  `Augur.track`, o si un `analytics.track("…")` nombra un evento que no está en el catálogo. Desde
+  M2 no queda ninguna excepción.
 - **`managers/`** — lógica de negocio:
   - `gameManager.gd` — objetivos, checkpoints y condiciones de victoria y de derrota de la run.
   - `mapLoader.gd` — carga del mapa y aplicación del paquete inicial.
   - `pollutionManager.gd` — contabilidad de contaminación, global y por casilla. El tick pasivo de
     los tiles (lago, tóxico, lava) lo aplica `tileMap.tick_passive()`, no este manager.
+  - `analytics.gd` — **analítica de runs** *(2026-09-30)*: nodo `Analytics` que `Main._ready()`
+    crea antes de `_configure_augur()` y que `reset()` **no** libera (vive toda la sesión). Carga y
+    expande `resources/analyticsCatalog.json` —la **única** lista de eventos y props, con tipos
+    cerrados `int`/`float`/`bool01`/`enum:<x>`/`id` y sin `string` libre; los enums salen de
+    `factoryParams.json` y las familias `built_*@per_factory` se abren a una prop por valor—,
+    valida cada `track()` (una prop no declarada, fuera de enum o `float` donde va `int` tumba el
+    evento: devuelve `false` y no manda nada), ata los eventos de run a `run_id`/`run_t` y calcula
+    `balance_id` (SHA-256 del JSON + constantes de `run_start`, 12 hex). Desde M2 `Main` emite el
+    ciclo de la run: `ui_open` (menú, paquete, carta, token, resumen), `checkpoint_reached` (lee
+    `gameManager.last_tier`/`last_segment_rate`), `card_offered` **una fila por carta al elegir**
+    (`slot` 1..N: las ruinas ofrecen una y pasan `source = "ruins"` a `_on_checkpoint_reached`),
+    `card_granted`, `cell_restored` y `deadlock_opened`/`deadlock_closed` (señales nuevas del
+    `gameManager`). Desde M3, las doce **acciones del jugador** (`factory_built`/`factory_demolished`
+    —que alimentan `built_*`/`demolished_total` del censo—, `belt_placed`/`belt_removed`/`belt_rejected`
+    con `no_money` solo si sin dinero sí cabía, `radial_closed`, `build_rejected`, `click_rejected`,
+    `panel_opened` y las tres del panel), todas con `note_action()`. Las pantallas de `ui/` no
+    conocen `analytics`: emiten señales —`radialMenu.closed(built)` una sola vez por cierre;
+    `factoryPanel.workers_changed`/`material_selected`/`belt_filter_set` solo si la acción se
+    aplica— y `Main` las traduce. `checkpoint_reached.rate` se omite con el −1.0 centinela. Desde
+    M4, `Analytics._process()` manda `run_sample` cada 10 s de **`gameManager.run_time`** (no de
+    reloj: con las cartas `run_time` se congela y con el árbol pausado el nodo, en
+    `PROCESS_MODE_INHERIT`, no corre); un frame largo que salta dos umbrales da una sola muestra y
+    la rejilla sigue en 10/20/30…; lee el `factoryArray` vivo de Main (`n_*`, paradas con
+    `ui/blockedReason.gd`) y comprueba cada referencia con `is_instance_valid`, porque `reset()` las
+    libera y el nodo no. Desde Legibilidad M0 manda también `segment_rate {checkpoint, seg_t, rate}`
+    cada 1 s de `run_time` (`SEGMENT_EVERY`, misma rejilla y reglas), solo en producción y solo con
+    `gameManager.segmentLiveRate()` ≥ 0 (el parcial del tramo sin calentamiento); `checkpoint` es el
+    tramo en curso 1-based, el mismo del `checkpoint_reached` que lo cierra. `tools/export_catalog.gd` imprime el catálogo
+    expandido en formato `catalog.upsert` (Godot antepone su cabecera por stdout: cortar con
+    `sed -n '/^\[/,$p'`). Y `tools/augur-setup.sh <endpoint> <email> [slug=balactorio]` (M5) deja
+    un Augur listo: `catalog.upsert` de ese export, `propIndex.create` de `checkpoints`/`result`/
+    `card`/`factory`/`balance_id`, los tableros y gráficas de `tools/augur-boards.json` (tablero por
+    nombre, gráfica por título: idempotente, no borra nada) y el `claude_context` de
+    `tools/augur-context.md`. Pide la contraseña con `read -s`: se ejecuta en una terminal, no desde
+    Claude Code. **Cada `avg` del JSON lleva al lado un `count`** del mismo evento, agrupación y
+    `where`, porque el `n` de Augur cuenta sesiones, no filas.
+  - `weatherManager.gd` — **clima por zonas** *(Plan «Eventos Climáticos», 2026-09-30)*: nodo
+    `WeatherManager` hijo de Main (lo crea `_start_game()` tras el gameManager y lo libera `reset()`),
+    catálogo `WeatherEvents` de `factoryParams.json` (sequía, lluvia, tormenta, viento). Tira cada
+    `ROLL_INTERVAL` con probabilidad `min(MAX_CHANCE, BASE_CHANCE + PEAK_FACTOR × peak_pollution)`,
+    **cuatro constantes NO medidas**. 🔴 **Los efectos se CONSULTAN, nunca se escriben en la casilla**
+    (`cell_types` no se toca): `getMultiplierAt()` en `factoryData._apply_pollution()` (solo emisión
+    positiva), `getPassiveAt()` en `tileMap._tick_weather_passive()` (por `delta`, casilla a
+    casilla), `haltsProductionAt()` en `factoryData.update()` (razón `storm`, solo producción) y
+    `getContagionDirectionAt()` en `tileMap.tick_contagion()` (conserva el total). 🔴 **Plan B 1**:
+    con `gameManager.deadlock_timer > 0` no tira y los activos se suspenden (`isSuspended()`), así
+    que todas las consultas dan su neutro. La suite no se vuelve aleatoria: `Main.weather_enabled` y
+    `setSeed()`. `BALACTORIO_WEATHER=aggressive` pone cada tirada al tope; se ignora en build
+    exportada (`OS.has_feature("template")`), como `AUGUR_KEY`.
+    En la analítica *(2026-10-01)*: `Main._on_weather_started()` / `_on_weather_ended()` (conectados en
+    `_mount_run()`) mandan `weather_started` {`weather`, zona `x`/`y`/`w`/`h`, `duration`, `chance`,
+    `n_active`} y `weather_ended` {`weather`, `n_active`}, y `run_sample` lleva `weather_active`. **El
+    efecto** de cada clima (contaminación extra, limpieza, contagio desviado) **no se mide todavía**.
   - `saveManager.gd` — **meta-progresión** en `user://save.json`: paquetes y mapas desbloqueados,
-    runs completadas y mejor tiempo. **No guarda la run en curso**: no existe «continuar partida».
+    runs completadas y mejor tiempo. **No guarda la run en curso**: eso es `runSave.gd`.
+  - `runSave.gd` — **la run en curso** en `user://run.json` (2026-10-01), `RefCounted` que posee
+    `Main` (`Main.runSave`). Cada clase con estado tiene `snapshot()`/`restore(d)` espejo (Bag,
+    player, pollutionManager, gameManager, weatherManager, beltNetwork, factoryData) y `Main`
+    compone (`_capture_run()`); celdas como `"x,y"` (`cell_key`/`parse_cell`). Se escribe cada 20 s
+    de `_tick_world()` y al cerrar; se **borra** al continuar, ganar, perder y en `reset()`, y
+    `read_valid()` tira el fichero si cambian `VERSION` o el hash de `factoryParams.json`.
+    `_continue_game()` restaura en dos fases (`build()` y después se pisan los campos, sin
+    recalcular sinergias) sobre `_mount_run()`, el mismo cableado que `_start_game()`: **un manager
+    nuevo va en `_mount_run()` y, si tiene estado, con su `snapshot()`/`restore()`**.
   - `beltNetwork.gd` — **la red de cintas** (2026-09-18), indexada por celda (`Vector2i ->
     BeltSegment`), con `deliver()` como único camino por el que un material llega a su destino.
     🔴 Desde el 2026-09-23 `deliver()` está **partido en tres** para que el almacén pueda emitir por
@@ -248,7 +369,7 @@ Dos trampas que costaron cuatro iteraciones y que valen para **cualquier** condu
     (colocación en grid).
   - `player/` — `player.tscn`/`player.gd` + `Bag.gd` (inventario de recursos/workers).
   - `tilemap/` — `tile_map.tscn` (mapa isométrico).
-- **`ui/`** — `mainMenu`, `packageSelect`, `radialMenu`, `upgradeScreen`, `runSummary`,
+- **`ui/`** — `mainMenu`, `consentScreen`, `packageSelect`, `radialMenu`, `upgradeScreen`, `runSummary`,
   `factoryTooltip`, `factoryPanel`. Pantallas construidas por código en su `initialize()`; no
   tienen `.tscn`.
   - Controles: **click izquierdo** en casilla libre abre el radial de construcción; **click
@@ -470,8 +591,14 @@ Pendiente conocido — **léelo antes de asumir que algo funciona**:
 - ~~`ui/factoryTooltip.gd` pinta «Produce: `<null>`»~~ — **arreglado el 2026-09-17**. La causa: se
   comparaba `str(params.get("material", null))` contra el texto `"null"`, y `str(null)` devuelve
   `"<null>"`. Cuidado con repetirlo en cualquier UI nueva: compara contra `null`, no contra texto.
-- El HUD **no enseña** el rendimiento de línea que decide el tier de la recompensa, así que el
-  jugador no puede saber por qué le han dado una carta potente.
+- ~~El HUD no enseña el rendimiento de línea~~ — **resuelto el 2026-09-30** (Plan «Legibilidad de
+  la Run», M3): `gameManager.getLineState()` pinta `Línea: sobrada / ajustada / floja` a partir de
+  `WARMUP_SECONDS` (20) de tramo, con cortes a ±`LINE_STATE_MARGIN` (0,10) de `TIER2_EFFICIENCY`, y
+  lo calla con el aviso de punto muerto abierto. Semáforo y no porcentaje porque el parcial
+  (`segmentLiveRate()`) va sesgado a la baja al arrancar el tramo. `getObjectiveText()` hace cumplir
+  `HUD_MAX_CHARS` en runtime (aviso > progreso > clima > línea: el clima, desde 2026-09-30, va en
+  cabeza de la línea y lo calla el aviso de punto muerto). El tinte de colapso es la **última** pasada de
+  `tileMap.draw_tints()` (tipo → contaminación → clima → colapso) (`collapseIntensity()`, `setGameManager()` inyectado en `Main._start_game()`).
 - El arrastre de cinta **no se previsualiza** mientras mantienes el botón: se tiende a ciegas y solo
   se ve el resultado al soltar. El `BeltOverlay` ya es el sitio donde pintarlo.
 - 🔴 **Deuda de MEDICIÓN que dejó el Plan «Variedad de Factorías» (2026-09-22)**, y hay que leerla
@@ -522,6 +649,10 @@ Reglas que **sí** funcionan y conviene no romper (arregladas el 2026-09-17):
 - 🔴 **Perder NO toca `user://save.json`.** `_on_run_lost()` es el espejo de `_on_run_won()` **sin**
   su bloque de `saveManager`: no registra la run, no mueve el mejor tiempo y no desbloquea paquetes
   ni mapas. La meta-progresión se gana terminando la run.
+- 🔴 **La suite y el juego comparten `user://`.** `reset()`, ganar y perder borran `user://run.json`:
+  la primera línea de `tests/run_tests.gd:_ejecutar()` redirige `RunSave.default_path` a
+  `user://test_run.json`, y una guardia final comprueba que el real no cambió. Un conductor de
+  `tools/` que monte `Main` también tiene que redirigirlo antes de instanciarlo.
 - 🔴 **`removePollution(amount, cell)` descuenta del global SOLO lo que quita de esa casilla.** Es la
   regla de la que cuelga media mecánica: la contaminación vive en las casillas, así que limpiar sobre
   suelo limpio no acerca la victoria y la fase 2 se gana **cubriendo** las zonas sucias en vez de
@@ -557,8 +688,9 @@ Reglas que **sí** funcionan y conviene no romper (arregladas el 2026-09-17):
   verse aunque cruce una cinta por la casilla. Hay una prueba que fija el orden — sin ella, un
   choque de `z_index` se vuelve a colar en silencio, que es justo lo que pasó al planificarlo.
 - **Una factoría parada dice por qué, y lo dice en tres sitios con el mismo color.**
-  `factoryData.blocked_reason` tiene cinco valores con prioridad fija — `""` / `workers` / `input` /
-  `output` / `choke` — y lo escribe **solo `update()`**, que es donde vive esa prioridad (la única
+  `factoryData.blocked_reason` tiene seis valores con prioridad fija — `""` / `workers` / `storm` /
+  `input` / `output` / `choke` (`storm` desde 2026-09-30: la para una tormenta, solo producción; también
+  en el enum `blocked` de `analyticsCatalog.json` y en `blocked_storm` de `run_sample`) — y lo escribe **solo `update()`**, que es donde vive esa prioridad (la única
   excepción es `clearOutputBuffer()`, que borra el `"output"` al desatascar). Lo pintan el
   `StatusOverlay` en el mapa y, en palabras, `ui/factoryTooltip.gd` y `ui/factoryPanel.gd`, los tres
   preguntando por `ui/blockedReason.gd` para que no puedan discrepar. 🔴 **Las dos superficies de

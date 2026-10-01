@@ -1,0 +1,170 @@
+{
+  "enums": {
+    "factory":             {"from": "Factories"},
+    "card":                {"from": "Upgrades", "plus_from": {"prefix": "token_unlock_", "keys": "Factories"}},
+    "material":            {"from": ["Factories.material", "Factories.materials"]},
+    "tile":                {"from": "TileTypes", "plus": ["plain"]},
+    "package":             {"from": "StartingPackages"},
+    "map":                 {"from": "Maps.id"},
+    "screen":              {"values": ["main_menu", "package_select", "upgrade", "token", "run_summary", "radial", "panel", "none"]},
+    "result":              {"values": ["win", "lose", "abandon", "suspend"]},
+    "card_source":         {"values": ["checkpoint", "ruins", "token"]},
+    "deadlock_outcome":    {"values": ["recovered", "lost"]},
+    "belt_reject_reason":  {"values": ["no_fit", "no_money"]},
+    "build_reject_reason": {"values": ["cell_invalid", "no_money"]},
+    "blocked":             {"values": ["workers", "storm", "input", "output", "choke", "none"]},
+    "belt_filter":         {"enum": "material", "plus": ["any"]},
+    "weather":             {"from": "WeatherEvents"}
+  },
+  "families": {
+    "per_factory":  {"enum": "factory"},
+    "per_material": {"enum": "material"}
+  },
+  "events": {
+    "ui_open": {
+      "description": "Se abre una pantalla o un menú.",
+      "run": false,
+      "props": {"screen": "enum:screen"}
+    },
+    "run_start": {
+      "description": "Empieza una run: paquete, mapa y los valores de balance con los que se juega; resumed_from, solo al continuar una guardada, es el run_id de la que se suspendió.",
+      "run": true,
+      "props": {"package": "enum:package", "map": "enum:map", "balance_id": "id",
+                "contagion_rate": "float", "deadlock_grace": "float", "tier2_efficiency": "float",
+                "restoration_base": "float", "restoration_peak_factor": "float",
+                "cell_block_pollution": "float", "contagion_pollution": "float",
+                "pollution_threshold": "float", "resumed_from": "id"}
+    },
+    "run_end": {
+      "description": "Acaba una run (ganada, perdida, abandonada o suspendida al cerrar con la run guardada) con el censo completo.",
+      "run": true,
+      "props": {"result": "enum:result", "duration_ms": "int", "package": "enum:package",
+                "map": "enum:map", "balance_id": "id", "checkpoints": "int",
+                "final_pollution": "float", "peak_pollution": "float", "built_total": "int",
+                "demolished_total": "int", "belt_cells": "int", "built_*": "int@per_factory",
+                "left_*": "int@per_material", "workers_free": "int", "workers_total": "int",
+                "cards_chosen": "int", "screen": "enum:screen", "idle_s": "float"}
+    },
+    "checkpoint_reached": {
+      "description": "Se cierra un checkpoint (1-based) con su tier y el ritmo del tramo.",
+      "run": true,
+      "props": {"checkpoint": "int", "seg_t": "float", "tier": "int", "rate": "float"}
+    },
+    "card_offered": {
+      "description": "Una carta mostrada al jugador, elegida o no (una fila por carta).",
+      "run": true,
+      "props": {"card": "enum:card", "tier": "int", "slot": "int", "chosen": "bool01",
+                "source": "enum:card_source", "checkpoint": "int", "decision_ms": "int"}
+    },
+    "card_granted": {
+      "description": "Una carta concedida sin elegir.",
+      "run": true,
+      "props": {"card": "enum:card", "checkpoint": "int"}
+    },
+    "deadlock_opened": {
+      "description": "Se abre la ventana de punto muerto.",
+      "run": true,
+      "props": {"checkpoint": "int"}
+    },
+    "deadlock_closed": {
+      "description": "Se cierra la ventana de punto muerto: recuperada o perdida.",
+      "run": true,
+      "props": {"secs": "float", "outcome": "enum:deadlock_outcome"}
+    },
+    "cell_restored": {
+      "description": "Una casilla tóxica vuelve a ser construible.",
+      "run": true,
+      "props": {"cx": "int", "cy": "int"}
+    },
+    "weather_started": {
+      "description": "Empieza un clima: cuál, su zona ya recortada al mapa (x, y, w, h en casillas), cuánto durará, con qué probabilidad salía la tirada y cuántos climas hay activos contando este.",
+      "run": true,
+      "props": {"weather": "enum:weather", "x": "int", "y": "int", "w": "int", "h": "int",
+                "duration": "float", "chance": "float", "n_active": "int"}
+    },
+    "weather_ended": {
+      "description": "Termina un clima al agotar su duración. Una run continuada puede cerrar un clima que empezó en la run suspendida (su weather_started está en la run de resumed_from).",
+      "run": true,
+      "props": {"weather": "enum:weather", "n_active": "int"}
+    },
+    "factory_built": {
+      "description": "El jugador construye una factoría.",
+      "run": true,
+      "props": {"factory": "enum:factory", "cx": "int", "cy": "int", "tile": "enum:tile",
+                "n_synergies": "int", "paid_*": "int@per_material"}
+    },
+    "factory_demolished": {
+      "description": "El jugador demuele una factoría.",
+      "run": true,
+      "props": {"factory": "enum:factory", "cx": "int", "cy": "int", "age_s": "float",
+                "refund_*": "int@per_material"}
+    },
+    "belt_placed": {
+      "description": "El jugador tiende una cinta arrastrando.",
+      "run": true,
+      "props": {"x0": "int", "y0": "int", "x1": "int", "y1": "int", "cells": "int",
+                "paid_wood": "int"}
+    },
+    "belt_removed": {
+      "description": "El jugador borra un segmento de cinta.",
+      "run": true,
+      "props": {"cx": "int", "cy": "int"}
+    },
+    "belt_rejected": {
+      "description": "Un arrastre de cinta que no se tiende.",
+      "run": true,
+      "props": {"reason": "enum:belt_reject_reason", "cells": "int"}
+    },
+    "radial_closed": {
+      "description": "Se cierra el radial de construcción, construyendo o no.",
+      "run": true,
+      "props": {"cx": "int", "cy": "int", "built": "bool01", "n_options": "int",
+                "n_affordable": "int"}
+    },
+    "build_rejected": {
+      "description": "Se elige una factoría en el radial y no se construye.",
+      "run": true,
+      "props": {"factory": "enum:factory", "reason": "enum:build_reject_reason"}
+    },
+    "click_rejected": {
+      "description": "Click sobre una casilla donde no cabe ninguna factoría.",
+      "run": true,
+      "props": {"cx": "int", "cy": "int", "tile": "enum:tile", "saturated": "bool01"}
+    },
+    "panel_opened": {
+      "description": "Se abre el panel de una factoría colocada.",
+      "run": true,
+      "props": {"factory": "enum:factory", "cx": "int", "cy": "int", "blocked": "enum:blocked"}
+    },
+    "workers_changed": {
+      "description": "El jugador asigna o retira un worker desde el panel.",
+      "run": true,
+      "props": {"factory": "enum:factory", "delta": "int", "assigned": "int"}
+    },
+    "material_selected": {
+      "description": "El jugador cambia el material que produce una factoría.",
+      "run": true,
+      "props": {"factory": "enum:factory", "material": "enum:material"}
+    },
+    "belt_filter_set": {
+      "description": "El jugador pone el filtro de material de una cinta.",
+      "run": true,
+      "props": {"cx": "int", "cy": "int", "material": "enum:belt_filter"}
+    },
+    "run_sample": {
+      "description": "Muestra del estado de la run cada 10 s de juego.",
+      "run": true,
+      "props": {"checkpoint": "int", "pollution": "float", "peak": "float",
+                "saturated_cells": "int", "toxic_cells": "int", "stock_*": "int@per_material",
+                "avail_*": "int@per_material", "workers_free": "int", "workers_total": "int",
+                "n_*": "int@per_factory", "blocked_workers": "int", "blocked_input": "int",
+                "blocked_output": "int", "blocked_choke": "int", "blocked_storm": "int", "weather_active": "int", "idle_s": "float",
+                "deadlock_s": "float"}
+    },
+    "segment_rate": {
+      "description": "Rendimiento parcial del tramo en curso cada 1 s de juego (sin calentamiento).",
+      "run": true,
+      "props": {"checkpoint": "int", "seg_t": "float", "rate": "float"}
+    }
+  }
+}

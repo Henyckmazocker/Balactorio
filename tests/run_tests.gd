@@ -53,7 +53,19 @@ class SpyCanvas:
 	func draw_polyline(puntos, color, ancho = 1.0):
 		lines.append({ "puntos": puntos, "color": color, "ancho": ancho });
 
+# saveManager de verdad —su lógica de progresión entera— que no escribe: cuenta los save() en vez
+# de abrir user://save.json. Ganar en la suite con el saveManager real pisaría la meta-progresión
+# de David; con este, la huella del fichero real tiene que seguir quieta y se puede afirmar
+# igualmente que ganar registró la run.
+class SaveSinDisco extends "res://managers/saveManager.gd":
+	var guardados = 0;
+	func save():
+		guardados += 1;
+
 var _hecho = false;
+# Serialización M3: el run.json REAL al empezar la suite, para afirmar al final que ninguna
+# prueba lo ha creado, pisado ni borrado.
+var _run_real_huella_inicial = "";
 
 # Los tests corren en el primer frame, no en _initialize(): ahí el `root` todavía no está
 # montado y los nodos que se le añaden no quedan dentro del árbol, así que
@@ -67,6 +79,12 @@ func _process(_delta):
 	return false;
 
 func _ejecutar():
+	# 🔴 LO PRIMERO, antes de que ninguna prueba construya un Main: todo runSave nace apuntando
+	# al fichero de pruebas. Main toma su `path` de esta estática al construirse, así que ni las
+	# pruebas viejas que pasan por reset() saben nada de esto ni lo necesitan (Serialización M3).
+	var run_save_script = load("res://managers/runSave.gd");
+	_run_real_huella_inicial = _huella_de(run_save_script.RUN_PATH);
+	run_save_script.default_path = "user://test_run.json";
 	print("");
 	print("=== Balactorio — pruebas de M1..M6 + M0.5 + Tensión M1/M2/M3/M3.5/M4 + Cintas M1/M2/M3/M4/M5/M7 + Cuellos M1/M2/M3/M4/M5 ===");
 	print("");
@@ -75,6 +93,7 @@ func _ejecutar():
 		print("FATAL: no se pudo leer resources/factoryParams.json");
 		quit(2);
 		return;
+	_augur_huella_inicial = _huella_augur();
 
 	_test_m1_delta();
 	_test_m2_json(file_data);
@@ -146,6 +165,35 @@ func _ejecutar():
 	_test_cuellos_m4(file_data);
 	_test_cuellos_m5_guardia(file_data);
 	_test_regresion_produccion();
+	_test_legibilidad_m1(file_data);
+	_test_legibilidad_m2(file_data);
+	_test_analitica_m1(file_data);
+	_test_analitica_m2(file_data);
+	_test_analitica_m3(file_data);
+	_test_analitica_m4(file_data);
+	_test_legibilidad_m0(file_data);
+	_test_legibilidad_m3(file_data);
+	_test_legibilidad_m4(file_data);
+	_test_consentimiento_m1();
+	_test_analitica_m1_sin_clave();
+	_test_clima_m1(file_data);
+	_test_clima_m2(file_data);
+	_test_clima_m3(file_data);
+	_test_clima_m4(file_data);
+	_test_clima_m5(file_data);
+	_test_clima_m0(file_data);
+	_test_clima_m6(file_data);
+	_test_clima_analitica(file_data);
+	_test_serializacion_m1(file_data);
+	_test_serializacion_m2(file_data);
+	_test_serializacion_m3(file_data);
+	_test_serializacion_m4(file_data);
+	_test_serializacion_m5(file_data);
+
+	# La guardia de Serialización M3, después de TODAS las pruebas: la run guardada de David
+	# sigue exactamente como estaba (o sigue sin existir).
+	_check("Serialización M3: la suite no ha tocado el user://run.json real",
+		_huella_de(run_save_script.RUN_PATH) == _run_real_huella_inicial, "la huella cambió");
 
 	print("");
 	print("=== %d OK, %d FALLO ===" % [_passed, _failed]);
@@ -5652,22 +5700,23 @@ func _test_cuellos_m2(file_data):
 	_check("el overlay sabe a quién preguntarle qué pintar",
 		estado != null and estado.tile_map == tm);
 
-	# --- Los cuatro colores: las claves son EXACTAMENTE los cuatro valores que M1 escribe en
-	# blocked_reason. Una quinta razón sin color se dibujaría en negro o no se dibujaría, y
-	# una clave de más sería una razón que nadie escribe.
+	# --- Los colores: las claves son EXACTAMENTE los valores que update() escribe en
+	# blocked_reason —las cuatro de M1 y "storm" desde Eventos Climáticos M3—. Una razón sin
+	# color se dibujaría en negro o no se dibujaría, y una clave de más sería una razón que
+	# nadie escribe.
 	var script_tm = load("res://entities/tilemap/tileMap.gd");
 	var claves = script_tm.STATUS_COLORS.keys();
 	claves.sort();
-	_check("STATUS_COLORS tiene las cuatro razones y ninguna más",
-		claves == ["choke", "input", "output", "workers"], "claves = %s" % str(claves));
+	_check("STATUS_COLORS tiene las cinco razones y ninguna más",
+		claves == ["choke", "input", "output", "storm", "workers"], "claves = %s" % str(claves));
 	var todos_color = true;
 	var distintos = {};
 	for k in script_tm.STATUS_COLORS:
 		if not (script_tm.STATUS_COLORS[k] is Color):
 			todos_color = false;
 		distintos[str(script_tm.STATUS_COLORS[k])] = true;
-	_check("los cuatro son Color y ninguno se repite: cuatro razones, cuatro lecturas",
-		todos_color and distintos.size() == 4, "%d colores distintos" % distintos.size());
+	_check("los cinco son Color y ninguno se repite: cinco razones, cinco lecturas",
+		todos_color and distintos.size() == 5, "%d colores distintos" % distintos.size());
 
 	# --- Sin lista no peta. No es un caso raro: la suite monta el TileMap
 	# a mano y no llaman nunca a setFactories(), así que el nodo tiene que aguantarlo.
@@ -5830,11 +5879,12 @@ func _test_cuellos_m3(file_data):
 	var pm = _new_pm();
 	main.add_child(pm);
 
-	# --- El vocabulario: cuatro razones, cuatro frases, y los MISMOS colores que el mapa.
+	# --- El vocabulario: una frase por razón (las cuatro de M1 y "storm" desde Eventos
+	# Climáticos M3), y los MISMOS colores que el mapa.
 	var claves = blocked.TEXTS.keys();
 	claves.sort();
-	_check("hay una frase por razón y ninguna de más: las mismas cuatro que escribe M1",
-		claves == ["choke", "input", "output", "workers"], "claves = %s" % str(claves));
+	_check("hay una frase por razón y ninguna de más: las mismas cinco que escribe update()",
+		claves == ["choke", "input", "output", "storm", "workers"], "claves = %s" % str(claves));
 	var frases_ok = true;
 	var distintas = {};
 	for k in blocked.TEXTS:
@@ -5844,8 +5894,8 @@ func _test_cuellos_m3(file_data):
 		if frase == "" or frase.find("null") >= 0:
 			frases_ok = false;
 		distintas[frase] = true;
-	_check("las cuatro frases dicen algo, son distintas y ninguna arrastra un 'null'",
-		frases_ok and distintas.size() == 4, "%d frases distintas" % distintas.size());
+	_check("las cinco frases dicen algo, son distintas y ninguna arrastra un 'null'",
+		frases_ok and distintas.size() == 5, "%d frases distintas" % distintas.size());
 	var mismo_color = true;
 	for k in blocked.TEXTS:
 		if blocked.color_for(k) != script_tm.STATUS_COLORS[k]:
@@ -6989,8 +7039,11 @@ func _test_cd5_aviso(file_data):
 	# que mirar para romper la condición 1 y cancelar la cuenta atrás.
 	_check("sin comerse el objetivo ni el mantenimiento reservado",
 		gm._progressText(bag, pm, true) in texto and ("peaje reservado" in texto), texto);
+	# Desde Legibilidad M1 la etiqueta la pone _progressText() y no getStatusText(), así que
+	# lo que se comprueba es la cola ENTERA, rótulo incluido, sin la ventana abierta.
 	_check("pero con la cola de contaminación fuera mientras la ventana corre",
-		not ("Contaminación" in texto) and (pm.getStatusText() in gm._progressText(bag, pm)),
+		not ("Contaminación" in texto)
+		and (("  |  Contaminación: " + pm.getStatusText()) in gm._progressText(bag, pm)),
 		texto);
 
 	# --- La cuenta atrás baja de verdad con el reloj de la run.
@@ -7018,7 +7071,7 @@ func _test_cd5_aviso(file_data):
 	gm.production_done = true;
 	var restaurando = gm.getObjectiveText(bag, pm);
 	_check("el aviso sale también en la fase de restauración",
-		restaurando.begins_with("⚠ COLAPSO EN") and ("Restaurando:" in restaurando), restaurando);
+		restaurando.begins_with("⚠ COLAPSO EN") and ("Contaminación:" in restaurando), restaurando);
 	_check("y sin PollutionManager en el texto, por el camino corto",
 		gm.getObjectiveText(bag).begins_with("⚠ COLAPSO EN")
 		and ("¡Producción completada!" in gm.getObjectiveText(bag)), gm.getObjectiveText(bag));
@@ -7156,8 +7209,9 @@ func _test_cd7_hud(file_data):
 	# objetivo que alcanzar.
 	var pm = _new_pm();
 	pm.addPollution(22607.0, centro);
+	# Sin etiqueta desde Legibilidad M1: «Contaminación: » la antepone el HUD (_progressText).
 	_check("getStatusText() enseña el total y el umbral efectivo, sin cociente",
-		pm.getStatusText() == "Contaminación: 22607  (restaurar: ≤ 2717)", pm.getStatusText());
+		pm.getStatusText() == "22607  (restaurar: ≤ 2717)", pm.getStatusText());
 
 	# Y pollution_threshold sigue entero donde sí sirve: es la escala del tintado del mapa, que
 	# es quien comunica la gravedad de verdad. Borrarlo dejaría sin tintar los 11 tipos de casilla.
@@ -7217,7 +7271,9 @@ func _test_cd7_hud(file_data):
 	gm.production_done = true;
 	var restaurando = gm.getObjectiveText(bag, pm2);
 	_check("en restauración el aviso se antepone y la cola se QUEDA",
-		restaurando.begins_with("⚠ COLAPSO EN") and ("Restaurando: Contaminación:" in restaurando),
+		restaurando.begins_with("⚠ COLAPSO EN")
+		and restaurando.ends_with("  |  Contaminación: " + pm2.getStatusText())
+		and restaurando.count("Contaminación") == 1,
 		restaurando);
 	_check("y esa línea también cabe",
 		restaurando.length() <= presupuesto,
@@ -9022,6 +9078,18 @@ func _lineas_posibles_del_radial(molde, file_data) -> Array:
 	lineas.append("✦ Contam. ×0.75");
 	for i in range(1, 9):
 		lineas.append("✦ Mejora " + str(i) + (" vecina" if i == 1 else " vecinas"));
+	# Y desde Legibilidad M2 las de la CASILLA, sacadas de los `TileTypes` de verdad y por la
+	# función de verdad, con los dos signos de factoría: la productora escribe «⚠ Pantano ×…» y
+	# la restauradora «✦ Limpieza ×…», que no miden lo mismo.
+	for tname in file_data["TileTypes"]:
+		var tdef = file_data["TileTypes"][tname];
+		var pv = {
+			"tile_pollution_mult": float(tdef.get("pollution_multiplier", 1.0)),
+			"tile_on_build_pollution": float(tdef.get("on_build_pollution", 0.0)),
+		};
+		for signo in [1.0, -1.0]:
+			for par in molde._tile_lines(pv, signo):
+				lineas.append(par[0]);
 	return lineas;
 
 # Los rectángulos de los botones del radial, en las coordenadas del Control que los cuelga —que
@@ -9032,3 +9100,4180 @@ func _rects_del_radial(menu) -> Array:
 	for b in menu.find_children("", "Button", true, false):
 		rects.append(Rect2(b.position, b.size));
 	return rects;
+
+
+# ---------- Legibilidad M1: la etiqueta de la contaminación, una sola vez ----------
+
+# Hasta este hito la fase de restauración decía `Restaurando: Contaminación: N (restaurar: ≤ M)`:
+# getStatusText() traía su rótulo y _progressText() le ponía otro delante. Ahora el dato sale
+# desnudo del PollutionManager y el rótulo lo pone el HUD, en sus dos caminos. Se cuenta con
+# count() y no con `in` porque el defecto era justo la REPETICIÓN: `in` lo daba por bueno.
+func _test_legibilidad_m1(file_data):
+	print("Legibilidad M1 — la contaminación se nombra una sola vez");
+	var presupuesto = load("res://managers/gameManager.gd").HUD_MAX_CHARS;
+	var pm = _new_pm();
+	pm.addPollution(22607.0, Vector2i(5, 5));
+	_check("getStatusText() devuelve solo el dato, sin rótulo",
+		not ("Contaminación" in pm.getStatusText()) and pm.getStatusText().begins_with("22607"),
+		pm.getStatusText());
+
+	var gm = _new_gm(file_data);
+	var bag = _new_bag();
+	bag.initialize(file_data);
+
+	# --- Fase de restauración, sin ventana de punto muerto.
+	gm.production_done = true;
+	var restaurando = gm.getObjectiveText(bag, pm);
+	_check("en restauración el HUD dice `Contaminación: N  (restaurar: ≤ M)`",
+		restaurando == "Contaminación: 22607  (restaurar: ≤ 2717)", restaurando);
+	_check("con «Contaminación» exactamente UNA vez",
+		restaurando.count("Contaminación") == 1, restaurando);
+	_check("y sin el «Restaurando» que la duplicaba",
+		not ("Restaurando" in restaurando), restaurando);
+	_check("y cabe en el Label de una sola línea",
+		restaurando.length() <= presupuesto and not ("\n" in restaurando), restaurando);
+
+	# --- Fase de producción: la cola `  |  ` sigue rotulada, también una sola vez.
+	gm.production_done = false;
+	gm.current_checkpoint_index = 0;
+	var produciendo = gm.getObjectiveText(bag, pm);
+	_check("en producción la cola sigue diciendo `  |  Contaminación: N  (restaurar: ≤ M)`",
+		produciendo.ends_with("  |  Contaminación: 22607  (restaurar: ≤ 2717)"), produciendo);
+	_check("también con «Contaminación» exactamente UNA vez",
+		produciendo.count("Contaminación") == 1, produciendo);
+	_check("y la escala del tinte (200) no vuelve al HUD por ningún camino",
+		not ("/ 200" in restaurando) and not ("/ 200" in produciendo),
+		"%s || %s" % [restaurando, produciendo]);
+
+	_limpiar([pm, gm, bag]);
+
+
+# ---------- Legibilidad M2: el radial avisa de lo que la casilla le hace a lo construido ----------
+
+# Hasta este hito `preview_synergies()` miraba dos fuentes —el adjacency_bonus del tile y las
+# vecinas— y callaba otras dos que el juego sí aplica: el ×1.5 del pantano (build()) y el +10 de
+# la tierra quemada (Main._on_factory_chosen()). El jugador se enteraba después de pagar. Aquí se
+# fija que el preview las trae en claves PROPIAS, que el radial las pinta con el color que toca
+# según ensucien o limpien, que una casilla normal no añade nada y que consultar no mueve nada.
+# El veredicto visual —si el rojo se lee sobre el botón— es de quien mire el juego.
+func _test_legibilidad_m2(file_data):
+	print("Legibilidad M2 — el radial anuncia pantano y tierra quemada antes de construir");
+	var placer = load("res://entities/factory/factoryPlacer.gd").new();
+	var arr = [];
+	placer.initialize(null, file_data, arr);
+	var swamp = file_data["TileTypes"]["swamp"];
+	var burned = file_data["TileTypes"]["burned"];
+	var mult_json = float(swamp["pollution_multiplier"]);
+	var on_build_json = float(burned["on_build_pollution"]);
+	var stub = StubTileMap.new();
+	var c_swamp = Vector2i(3, 3);
+	var c_burned = Vector2i(6, 3);
+	var c_forest = Vector2i(9, 3);
+	var c_vacia = Vector2i(12, 3);
+	stub.defs[c_swamp] = swamp;
+	stub.defs[c_burned] = burned;
+	stub.defs[c_forest] = file_data["TileTypes"]["forest"];
+
+	# --- (1) El preview trae las dos fuentes, leídas del JSON y en claves propias.
+	var p_swamp = placer.preview_synergies("WoodCutter", c_swamp, stub);
+	_check("sobre swamp el preview trae el multiplicador del JSON en su propia clave",
+		_near(p_swamp["tile_pollution_mult"], mult_json) and _near(mult_json, 1.5), str(p_swamp));
+	_check("y NO lo mezcla con el pollution_mult de las sinergias, que sigue neutro",
+		_near(p_swamp["pollution_mult"], 1.0) and _near(p_swamp["tile_on_build_pollution"], 0.0),
+		str(p_swamp));
+	var p_burned = placer.preview_synergies("WoodCutter", c_burned, stub);
+	_check("sobre burned el preview trae el +10 del JSON en su propia clave",
+		_near(p_burned["tile_on_build_pollution"], on_build_json) and _near(on_build_json, 10.0)
+		and _near(p_burned["tile_pollution_mult"], 1.0), str(p_burned));
+	var p_forest = placer.preview_synergies("WoodCutter", c_forest, stub);
+	var p_vacia = placer.preview_synergies("WoodCutter", c_vacia, stub);
+	_check("sobre casilla normal (forest y sin tipo) las dos claves quedan neutras",
+		_near(p_forest["tile_pollution_mult"], 1.0) and _near(p_forest["tile_on_build_pollution"], 0.0)
+		and _near(p_vacia["tile_pollution_mult"], 1.0)
+		and _near(p_vacia["tile_on_build_pollution"], 0.0), "%s / %s" % [str(p_forest), str(p_vacia)]);
+	_check("y el adjacency_bonus de forest sigue llegando como antes",
+		p_forest["output_bonus"] == 1, str(p_forest));
+
+	# --- (2) La redacción y el color, por la función de verdad.
+	var radial = load("res://ui/radialMenu.gd").new();
+	var fac = file_data["Factories"];
+	var wc_sw = radial._tile_lines(p_swamp, float(fac["WoodCutter"]["pollution"]));
+	_check("productora sobre swamp: «⚠ Pantano ×1.5» en rojo",
+		wc_sw.size() == 1 and wc_sw[0][0] == "⚠ Pantano ×1.5"
+		and wc_sw[0][1] == radial.TILE_WARNING_COLOR, str(wc_sw));
+	for tipo in ["Reforester", "WaterTreatment"]:
+		var pv = placer.preview_synergies(tipo, c_swamp, stub);
+		var ls = radial._tile_lines(pv, float(fac[tipo]["pollution"]));
+		_check("restauradora (%s) sobre swamp: «✦ Limpieza ×1.5» en el verde de las sinergias" % tipo,
+			ls.size() == 1 and ls[0][0] == "✦ Limpieza ×1.5"
+			and ls[0][1] == radial.SYNERGY_COLOR, str(ls));
+	var mf_sw = radial._tile_lines(placer.preview_synergies("WorkerCamp", c_swamp, stub),
+		float(fac["WorkerCamp"]["pollution"]));
+	_check("una factoría de contaminación 0 (WorkerCamp) no anuncia el pantano: ×1.5 sobre 0 es 0",
+		_near(float(fac["WorkerCamp"]["pollution"]), 0.0) and mf_sw.is_empty(), str(mf_sw));
+	for tipo in ["WoodCutter", "Reforester"]:
+		var ls = radial._tile_lines(placer.preview_synergies(tipo, c_burned, stub),
+			float(fac[tipo]["pollution"]));
+		_check("%s sobre burned: «⚠ Quemada +10» en rojo, limpie o no" % tipo,
+			ls.size() == 1 and ls[0][0] == "⚠ Quemada +10"
+			and ls[0][1] == radial.TILE_WARNING_COLOR, str(ls));
+	_check("sobre casilla normal ninguna línea nueva",
+		radial._tile_lines(p_forest, 3.0).is_empty() and radial._tile_lines(p_vacia, -4.0).is_empty()
+		and radial._tile_lines({}, 3.0).is_empty());
+
+	# --- (3) El ancho: cada línea nueva cabe con la holgura que exige M4b.
+	var fuente = ThemeDB.fallback_font;
+	var nuevas = [wc_sw[0][0], "✦ Limpieza ×1.5", "⚠ Quemada +10"];
+	var peor = 0.0;
+	for t in nuevas:
+		peor = max(peor, fuente.get_string_size(t, HORIZONTAL_ALIGNMENT_CENTER, -1, 11).x);
+	_check("las tres líneas nuevas caben en el botón con 8 px de holgura",
+		peor <= float(radial.BUTTON_WIDTH) - 8.0, "la más ancha mide %.0f px" % peor);
+
+	# --- (4) El menú montado: la línea sale en el botón de verdad, con su color.
+	root.add_child(radial);
+	radial.initialize(["WoodCutter", "Reforester"], file_data, c_swamp, Vector2(640, 360),
+		{ "WoodCutter": p_swamp,
+		  "Reforester": placer.preview_synergies("Reforester", c_swamp, stub) });
+	var vistas = {};
+	for l in radial.find_children("", "Label", true, false):
+		vistas[l.text] = l.get_theme_color("font_color");
+	_check("montado sobre swamp, el botón del WoodCutter pinta «⚠ Pantano ×1.5» en rojo",
+		vistas.get("⚠ Pantano ×1.5", null) == radial.TILE_WARNING_COLOR, str(vistas.keys()));
+	_check("y el del Reforester «✦ Limpieza ×1.5» en verde",
+		vistas.get("✦ Limpieza ×1.5", null) == radial.SYNERGY_COLOR, str(vistas.keys()));
+	var rects = _rects_del_radial(radial);
+	var solapes = 0;
+	for i in range(rects.size()):
+		for j in range(i + 1, rects.size()):
+			if rects[i].intersects(rects[j]):
+				solapes += 1;
+	_check("y la línea de más no monta ningún botón sobre otro", solapes == 0, str(rects));
+	_limpiar([radial]);
+
+	# --- (5) Consultar no aplica: ni el valor base de una vecina ni la contaminación de la celda.
+	var pm = _new_pm();
+	pm.addPollution(4.0, c_burned);
+	var vecina = _new_factory("WoodCutter", c_swamp + Vector2i(1, 0));
+	vecina.pollutionAmount = 3.0;
+	arr.append(vecina);
+	var antes = [vecina.pollutionAmount, vecina.synergy_pollution_mult, pm.getCellPollution(c_burned),
+		pm.getCellPollution(c_swamp), pm.total_pollution, arr.size(),
+		float(swamp["pollution_multiplier"]), float(burned["on_build_pollution"])];
+	for i in range(10):
+		placer.preview_synergies("WoodCutter", c_swamp, stub);
+		placer.preview_synergies("Reforester", c_burned, stub);
+	var despues = [vecina.pollutionAmount, vecina.synergy_pollution_mult,
+		pm.getCellPollution(c_burned), pm.getCellPollution(c_swamp), pm.total_pollution, arr.size(),
+		float(swamp["pollution_multiplier"]), float(burned["on_build_pollution"])];
+	_check("consultar 20 veces sobre swamp y burned no mueve pollutionAmount, la celda ni el JSON",
+		antes == despues, "antes %s, después %s" % [str(antes), str(despues)]);
+
+	_limpiar([pm, vecina, placer]);
+
+
+# ---------- Analítica M1: catálogo, analytics.gd y la atadura con el código ----------
+
+# `resources/analyticsCatalog.json` es la única lista de eventos y props, y `managers/analytics.gd`
+# el único que habla con `Augur`. Aquí se fija: que ningún `analytics.track("…")` del código nombra
+# un evento fuera del catálogo y que nadie más llama a `Augur.track`; que el validador tumba lo que
+# no cumple su tipo sin mandar nada; que las familias y los enums salen del factoryParams.json; que
+# una run abre y cierra con el mismo `run_id` y un solo `run_end`; que `balance_id` es estable y
+# cambia con el balance; y que Main crea el nodo y reset() no lo libera. La secuencia por el camino
+# real (`_on_factory_chosen` → demoler → `end_run`) necesita los ganchos de M2/M3 y va en M3.
+
+# Los únicos sitios desde los que se puede llamar a `Augur.track`. Desde M2 el humo de Augur
+# (`_start_game()` y `_track_run_end()`) ya pasa por `analytics.begin_run()` / `end_run()` y no
+# queda ninguna excepción más.
+const AUGUR_TRACK_PERMITIDO = [
+	["res://managers/analytics.gd", ""],
+	["res://Main.gd", "_configure_augur"],
+];
+
+var _augur_huella_inicial = null;
+
+func _gd_del_proyecto(dir_path, out):
+	var dir = DirAccess.open(dir_path);
+	if dir == null:
+		return out;
+	for sub in dir.get_directories():
+		if sub.begins_with(".") or (dir_path == "res://" and sub == "addons"):
+			continue;
+		_gd_del_proyecto(dir_path.path_join(sub), out);
+	for f in dir.get_files():
+		if f.ends_with(".gd"):
+			out.append(dir_path.path_join(f));
+	return out;
+
+# Las llamadas a `Augur.track` de un fichero que caen fuera de lo permitido, como
+# "fichero:línea (función)". Se ignora lo que va detrás de `#`, y el patrón se arma por trozos
+# para que este mismo fichero no se denuncie a sí mismo.
+func _augur_track_fuera(path, text):
+	var re_call = RegEx.new();
+	re_call.compile("\\b" + "Aug" + "ur\\.track\\s*\\(");
+	var re_func = RegEx.new();
+	re_func.compile("^(static\\s+)?func\\s+(\\w+)");
+	var fuera = [];
+	var funcion = "";
+	var lineas = text.split("\n");
+	for i in range(lineas.size()):
+		var m = re_func.search(lineas[i]);
+		if m != null:
+			funcion = m.get_string(2);
+		var codigo = lineas[i].split("#")[0];
+		if re_call.search(codigo) == null:
+			continue;
+		var ok = false;
+		for permitido in AUGUR_TRACK_PERMITIDO:
+			if permitido[0] == path and (permitido[1] == "" or permitido[1] == funcion):
+				ok = true;
+		if not ok:
+			fuera.append("%s:%d (%s)" % [path, i + 1, funcion]);
+	return fuera;
+
+func _huella_augur():
+	var raiz = "user://augur/";
+	if not DirAccess.dir_exists_absolute(raiz):
+		return null;
+	var huella = {};
+	var pendientes = [raiz];
+	while not pendientes.is_empty():
+		var d = pendientes.pop_back();
+		var dir = DirAccess.open(d);
+		if dir == null:
+			continue;
+		huella[d] = "dir";
+		for sub in dir.get_directories():
+			pendientes.append(d.path_join(sub));
+		for f in dir.get_files():
+			var p = d.path_join(f);
+			huella[p] = "%d:%d" % [FileAccess.get_modified_time(p), FileAccess.get_file_as_bytes(p).size()];
+	return huella;
+
+func _new_analytics(file_data, recibidos):
+	var a = load("res://managers/analytics.gd").new();
+	a.name = "Analytics";
+	a.initialize(file_data);
+	a.sink = func(n, p): recibidos.append([n, p]);
+	return a;
+
+func _test_analitica_m1(file_data):
+	print("Analítica M1 — catálogo expandido, validador, run_id, balance_id y atadura con el código");
+	var params_text = FileAccess.get_file_as_string("res://resources/factoryParams.json");
+
+	# --- (1) Atadura código ↔ catálogo.
+	var recibidos = [];
+	var a = _new_analytics(file_data, recibidos);
+	_check("el catálogo carga y se expande", a.loaded);
+	var re_track = RegEx.new();
+	re_track.compile("\\banalytics\\.track\\(\\s*\"([^\"]+)\"");
+	var re_propio = RegEx.new();
+	re_propio.compile("(?<![\\w.])track\\(\\s*\"([^\"]+)\"");
+	var nombrados = [];
+	var desconocidos = [];
+	var augur_fuera = [];
+	for path in _gd_del_proyecto("res://", []):
+		if path.begins_with("res://tests/"):
+			continue;
+		var text = FileAccess.get_file_as_string(path);
+		var hits = re_track.search_all(text);
+		if path == "res://managers/analytics.gd":
+			hits = re_propio.search_all(text);
+		for m in hits:
+			nombrados.append(m.get_string(1));
+			if not a.events.has(m.get_string(1)):
+				desconocidos.append("%s: %s" % [path, m.get_string(1)]);
+		augur_fuera.append_array(_augur_track_fuera(path, text));
+	_check("el rastreo encuentra los track() propios de analytics.gd (run_start y run_end)",
+		nombrados.has("run_start") and nombrados.has("run_end"), str(nombrados));
+	_check("ningún track(\"…\") del código nombra un evento fuera del catálogo",
+		desconocidos.is_empty(), str(desconocidos));
+	_check("nadie fuera de analytics.gd y _configure_augur() llama a Augur.track",
+		augur_fuera.is_empty(), str(augur_fuera));
+	var plantada = "func _otra():\n\t" + "Aug" + "ur.track(\"x\", {})\n";
+	_check("y el detector sí denuncia una llamada plantada fuera de lo permitido",
+		_augur_track_fuera("res://ui/falso.gd", plantada).size() == 1
+		and _augur_track_fuera("res://Main.gd", plantada).size() == 1);
+
+	# --- (2) Expansión.
+	_check("el catálogo trae los 25 eventos: los 22 de las tres tablas, segment_rate (Legibilidad M0) y weather_started/weather_ended (2026-10-01)", a.events.size() == 25, str(a.events.keys()));
+	var factorias = file_data["Factories"].keys();
+	var run_end = a.events["run_end"]["props"];
+	var built = [];
+	for p in run_end:
+		if p.begins_with("built_") and p != "built_total":
+			built.append(p);
+	var esperadas = [];
+	for f in factorias:
+		esperadas.append("built_" + f);
+	built.sort();
+	esperadas.sort();
+	_check("built_*@per_factory abre una prop por cada clave de Factories, y ninguna más",
+		built == esperadas, "%s vs %s" % [str(built), str(esperadas)]);
+	var cartas = a.enums["card"];
+	var faltan = [];
+	for u in file_data["Upgrades"]:
+		if not cartas.has(u):
+			faltan.append(u);
+	for f in factorias:
+		if not cartas.has("token_unlock_" + f):
+			faltan.append("token_unlock_" + f);
+	_check("card incluye las %d de Upgrades y un token_unlock_* por factoría" % file_data["Upgrades"].size(),
+		faltan.is_empty() and file_data["Upgrades"].size() == 13
+		and cartas.size() == file_data["Upgrades"].size() + factorias.size(), str(faltan));
+	var mats = a.enums["material"];
+	_check("material sale de material y materials[] de Factories: wood, plank, stone y también glass",
+		mats.has("wood") and mats.has("plank") and mats.has("stone") and mats.has("glass")
+		and not mats.has(null), str(mats));
+	var mapas = [];
+	for m in file_data["Maps"]:
+		mapas.append(m["id"]);
+	_check("map son los id de Maps y tile trae plain", a.enums["map"] == mapas and a.enums["tile"].has("plain"),
+		str(a.enums["map"]));
+	var re_nombre = RegEx.new();
+	re_nombre.compile("^[A-Za-z0-9_]{1,64}$");
+	var malos = [];
+	var sin_run = [];
+	for ev in a.events:
+		if a.events[ev]["description"] == "":
+			malos.append(ev + " sin descripción");
+		for p in a.events[ev]["props"]:
+			if re_nombre.search(p) == null:
+				malos.append(ev + "." + p);
+		if a.events[ev]["run"] and not (a.events[ev]["props"].has("run_id") and a.events[ev]["props"].has("run_t")):
+			sin_run.append(ev);
+	_check("toda prop cabe en ^[A-Za-z0-9_]{1,64}$ y todo evento tiene descripción", malos.is_empty(), str(malos));
+	_check("todo evento de run declara run_id y run_t, y ui_open es el único que no es de run",
+		sin_run.is_empty() and not a.events["ui_open"]["run"], str(sin_run));
+	var upsert = a.export_upsert();
+	var fe = {};
+	for e in upsert:
+		if e["name"] == "factory_built":
+			fe = e["properties"];
+	_check("export_upsert: enum/id → string, int/float/bool01 → number",
+		upsert.size() == 25 and fe.get("factory", {}).get("type") == "string"
+		and fe.get("run_id", {}).get("type") == "string" and fe.get("cx", {}).get("type") == "number"
+		and fe.get("run_t", {}).get("type") == "number" and fe.has("paid_wood"), str(fe));
+
+	# --- (3) Validador: nada que no cumpla llega al sink.
+	_check("un evento sin run (ui_open) pasa sin run viva",
+		a.track("ui_open", {"screen": "main_menu"}) and recibidos.size() == 1);
+	recibidos.clear();
+	var rechazos = [
+		a.track("no_existe"),
+		a.track("ui_open", {"screen": "no_es_pantalla"}),
+		a.track("ui_open", {"screen": "main_menu", "extra": 1}),
+		a.track("factory_built", {"factory": "WoodCutter", "cx": 3, "cy": 4}),
+	];
+	_check("evento desconocido, valor fuera de enum, prop no declarada y evento de run sin run → false",
+		rechazos == [false, false, false, false] and recibidos.is_empty(), str(rechazos));
+
+	var pm = _new_pm();
+	var gm = _new_gm(file_data);
+	var bag = _new_bag();
+	bag.initialize(file_data);
+	bag.addToBag("wood", 40.0);
+	a.begin_run(gm, pm, bag, null, [], "standard", "forest_01");
+	recibidos.clear();
+	var r_float = a.track("factory_built", {"factory": "WoodCutter", "cx": 3.0, "cy": 4});
+	var r_bool = a.track("card_offered", {"card": "extra_wood", "chosen": 2});
+	var r_id = a.track("run_start", {"balance_id": "XYZ"});
+	_check("float donde va int, bool01 fuera de 0/1 e id que no es hex → false y el sink no recibe nada",
+		[r_float, r_bool, r_id] == [false, false, false] and recibidos.is_empty());
+	_check("bool01 acepta un bool y lo manda como 1; float acepta int y lo manda como float",
+		a.track("card_offered", {"card": "extra_wood", "chosen": true, "decision_ms": 1200})
+		and a.track("deadlock_closed", {"secs": 3, "outcome": "recovered"})
+		and typeof(recibidos[0][1]["chosen"]) == TYPE_INT and recibidos[0][1]["chosen"] == 1
+		and typeof(recibidos[1][1]["secs"]) == TYPE_FLOAT, str(recibidos));
+	a.end_run("abandon");
+
+	# --- (4) Secuencia directa sobre analytics (la de Main va en M3).
+	recibidos.clear();
+	gm.run_time = 5.0;
+	a.begin_run(gm, pm, bag, null, [], "standard", "forest_01");
+	gm.run_time = 12.5;
+	a.track("factory_built", {"factory": "WoodCutter", "cx": 3, "cy": 4, "tile": "plain",
+		"n_synergies": 0, "paid_wood": 4});
+	gm.run_time = 20.0;
+	a.track("factory_demolished", {"factory": "WoodCutter", "cx": 3, "cy": 4, "age_s": 7.5,
+		"refund_wood": 2});
+	var cerrado = a.end_run("abandon");
+	var segundo = a.end_run("abandon");
+	var nombres = [];
+	var ids = {};
+	for r in recibidos:
+		nombres.append(r[0]);
+		ids[r[1].get("run_id", "")] = true;
+	_check("begin_run → factory_built → factory_demolished → end_run emite exactamente esos cuatro",
+		nombres == ["run_start", "factory_built", "factory_demolished", "run_end"], str(nombres));
+	_check("los cuatro con el mismo run_id, de 8 hex", ids.size() == 1 and String(ids.keys()[0]).length() == 8,
+		str(ids.keys()));
+	_check("un segundo end_run no emite", cerrado and not segundo and recibidos.size() == 4);
+	var rs = recibidos[0][1];
+	var re = recibidos[3][1];
+	_check("run_start lleva paquete, mapa, balance_id de 12 hex y las 8 constantes",
+		rs["package"] == "standard" and rs["map"] == "forest_01" and String(rs["balance_id"]).length() == 12
+		and rs.has("contagion_rate") and rs.has("pollution_threshold") and rs["run_t"] == 5.0, str(rs));
+	_check("run_end cuenta built_WoodCutter = 1, built_total = 1, demolished_total = 1 y built_Quarry = 0",
+		re["result"] == "abandon" and re["built_WoodCutter"] == 1 and re["built_total"] == 1
+		and re["demolished_total"] == 1 and re["built_Quarry"] == 0, str(re));
+	_check("run_end lee Bag y los managers con int() explícito (left_wood %s, checkpoints %s)" % [str(re.get("left_wood")), str(re.get("checkpoints"))],
+		typeof(re["left_wood"]) == TYPE_INT and re["left_wood"] == int(bag.getAvailable("wood"))
+		and typeof(re["checkpoints"]) == TYPE_INT and typeof(re["workers_total"]) == TYPE_INT
+		and typeof(re["duration_ms"]) == TYPE_INT and re["balance_id"] == rs["balance_id"]);
+	_check("idle_s cuenta desde la última acción (demoler en t=20) y run_t es el run_time",
+		_near(re["idle_s"], 0.0) and re["run_t"] == 20.0 and recibidos[1][1]["run_t"] == 12.5, str(re["idle_s"]));
+	_check("sin run viva, un evento de run vuelve a rechazarse",
+		not a.track("belt_removed", {"cx": 1, "cy": 1}) and recibidos.size() == 4);
+
+	# --- (5) balance_id.
+	var consts = a.run_constants(pm, gm);
+	var b1 = a.balance_id(params_text, consts);
+	var b2 = a.balance_id(params_text, consts.duplicate());
+	var tocadas = consts.duplicate();
+	tocadas["contagion_rate"] = consts["contagion_rate"] + 0.01;
+	var b3 = a.balance_id(params_text, tocadas);
+	var b4 = a.balance_id(params_text + " ", consts);
+	_check("balance_id es estable con el mismo JSON y las mismas constantes", b1 == b2 and b1.length() == 12, b1);
+	_check("y cambia al tocar contagion_rate o el texto del JSON", b3 != b1 and b4 != b1, "%s %s %s" % [b1, b3, b4]);
+	var props_rs = a.events["run_start"]["props"];
+	var constantes_ok = consts.size() == 8;
+	for k in consts:
+		constantes_ok = constantes_ok and props_rs.has(k) and typeof(consts[k]) == TYPE_FLOAT;
+	_check("run_constants da las 8 de run_start, en float", constantes_ok, str(consts));
+	_limpiar([a, pm, gm, bag]);
+
+	# --- (6) Main crea Analytics en _ready() y reset() no lo libera.
+	var main = load("res://Main.gd").new();
+	main.name = "Main";
+	root.add_child(main);
+	var nodo = main.get_node_or_null("Analytics");
+	var sm = main.get_node_or_null("SaveManager");
+	_check("Main._ready() crea el hijo Analytics, cargado, antes que el SaveManager",
+		nodo != null and nodo == main.analytics and nodo.loaded and sm != null
+		and nodo.get_index() < sm.get_index());
+	main.reset();
+	_check("reset() no libera Analytics: sigue siendo el mismo nodo",
+		is_instance_valid(nodo) and not nodo.is_queued_for_deletion() and main.get_node_or_null("Analytics") == nodo);
+	# `mapLoader` es un nodo que Main crea y nunca cuelga del árbol: se suelta a mano.
+	var ml = main.mapLoader;
+	_limpiar([main]);
+	if is_instance_valid(ml) and ml is Node:
+		ml.free();
+
+# ---------- Analítica M2: el ciclo de la run por el camino de Main ----------
+
+# Una run de verdad (`_start_game()`) con el `sink` falso: `run_start` con el mapa de `pick_map()`,
+# el `checkpoint_reached` que Main lee de `gameManager.last_tier`/`last_segment_rate`, una fila de
+# `card_offered` por carta mostrada (slot 1..N, un `chosen` 1) también desde las ruinas (oferta de
+# una), la ventana del punto muerto y el `run_end` de la `R` con `screen: none`, todos con el mismo
+# `run_id`; un segundo cierre no emite. El censo de construcción va a 0: lo cuenta M3.
+func _nombres_de(recibidos):
+	var nombres = [];
+	for r in recibidos:
+		nombres.append(r[0]);
+	return nombres;
+
+func _filas_de(recibidos, nombre):
+	var filas = [];
+	for r in recibidos:
+		if r[0] == nombre:
+			filas.append(r[1]);
+	return filas;
+
+func _test_analitica_m2(file_data):
+	print("Analítica M2 — ciclo de la run por Main: run_start, checkpoint, cartas, punto muerto y run_end");
+	var main = _main_para_run();
+	var recibidos = [];
+	main.analytics.sink = func(n, p): recibidos.append([n, p]);
+	main._start_game("standard");
+	var gm = main.gameManager;
+	var placer = main.placer;
+
+	# --- (1) run_start desde _start_game(), con el mapa que eligió pick_map().
+	_check("_start_game() emite run_start y nada más", _nombres_de(recibidos) == ["run_start"],
+		str(_nombres_de(recibidos)));
+	var rs = recibidos[0][1] if recibidos.size() > 0 else {};
+	_check("run_start lleva el paquete y el mapa de pick_map() (%s)" % main._run_map_id,
+		main._run_map_id != "" and rs.get("map", "") == main._run_map_id
+		and rs.get("package", "") == "standard" and main.analytics.has_run(), str(rs));
+
+	# --- (2) Se cierra el checkpoint 1: la señal real del gameManager llega a Main.
+	recibidos.clear();
+	gm.current_checkpoint_index = 1;
+	gm.run_time = 42.0;
+	gm.last_checkpoint_time = 42.0;
+	gm.last_tier = 2;
+	gm.last_segment_rate = 0.75;
+	var oferta = ["speed_woodcutter", "more_workers", "extra_wood"];
+	gm.checkpoint_reached.emit(oferta, {}, []);
+	var cr = _filas_de(recibidos, "checkpoint_reached");
+	_check("checkpoint_reached sale una vez con checkpoint 1, seg_t, tier y rate del gameManager",
+		cr.size() == 1 and cr[0]["checkpoint"] == 1 and _near(cr[0]["seg_t"], 42.0)
+		and cr[0]["tier"] == 2 and _near(cr[0]["rate"], 0.75), str(cr));
+	_check("y se abre la pantalla de carta con su ui_open",
+		_filas_de(recibidos, "ui_open").map(func(p): return p["screen"]) == ["upgrade"]
+		and main.get_node_or_null("UpgradeScreen") != null, str(_nombres_de(recibidos)));
+	_check("montar la oferta no emite card_offered: se manda al elegir",
+		_filas_de(recibidos, "card_offered").is_empty());
+	recibidos.clear();
+	main.get_node("UpgradeScreen")._on_upgrade_chosen("more_workers");
+	var co = _filas_de(recibidos, "card_offered");
+	var slots = [];
+	var cartas = [];
+	var elegidas = 0;
+	var co_ok = co.size() == 3;
+	for fila in co:
+		slots.append(fila["slot"]);
+		cartas.append(fila["card"]);
+		elegidas += fila["chosen"];
+		co_ok = (co_ok and fila["source"] == "checkpoint" and fila["checkpoint"] == 1
+			and typeof(fila["decision_ms"]) == TYPE_INT and fila["decision_ms"] >= 0
+			and fila["tier"] == int(file_data["Upgrades"][fila["card"]]["tier"])
+			and fila["chosen"] == (1 if fila["card"] == "more_workers" else 0));
+	_check("elegir manda 3 × card_offered, una fila por carta en su orden (slot 1..3)",
+		co_ok and slots == [1, 2, 3] and cartas == oferta, str(co));
+	_check("y exactamente una con chosen 1, la elegida", elegidas == 1);
+	paused = false;
+
+	# --- (3) Las ruinas: oferta de UNA carta, source ruins y sin checkpoint_reached. Por el
+	# camino real: construir sobre la casilla de ruinas del mapa.
+	recibidos.clear();
+	var tm = main.get_node("TileMap");
+	var ruina = null;
+	for c in tm.cell_types:
+		if tm.cell_types[c] == "ruins":
+			ruina = c;
+	_check("el mapa de la run tiene su casilla de ruinas", ruina != null);
+	if ruina != null:
+		main._on_factory_chosen("WoodCutter", ruina);
+	var pantalla = main.get_child(main.get_child_count() - 1);
+	var ofrecida = main._offer_ids.duplicate();
+	_check("construir sobre ruinas monta una oferta de una carta, sin checkpoint_reached",
+		ofrecida.size() == 1 and pantalla.has_signal("upgrade_chosen")
+		and _filas_de(recibidos, "checkpoint_reached").is_empty()
+		and _filas_de(recibidos, "ui_open").size() == 1, "%s %s" % [str(ofrecida), str(_nombres_de(recibidos))]);
+	recibidos.clear();
+	if pantalla.has_signal("upgrade_chosen") and ofrecida.size() == 1:
+		pantalla._on_upgrade_chosen(ofrecida[0]);
+	var cr_ruina = _filas_de(recibidos, "card_offered");
+	_check("elegirla manda 1 × card_offered con source ruins, slot 1 y chosen 1",
+		cr_ruina.size() == 1 and cr_ruina[0]["source"] == "ruins" and cr_ruina[0]["slot"] == 1
+		and cr_ruina[0]["chosen"] == 1 and cr_ruina[0]["checkpoint"] == 1, str(cr_ruina));
+	paused = false;
+
+	# --- (4) La ventana del punto muerto, por las señales nuevas del gameManager.
+	recibidos.clear();
+	gm.deadlock_opened.emit();
+	gm.deadlock_closed.emit(4.5, false);
+	gm.deadlock_closed.emit(2.0, true);
+	var dl = recibidos.map(func(r): return [r[0], r[1].get("checkpoint", r[1].get("outcome", ""))]);
+	_check("deadlock_opened lleva el checkpoint y deadlock_closed secs + outcome recovered/lost",
+		dl == [["deadlock_opened", 1], ["deadlock_closed", "recovered"], ["deadlock_closed", "lost"]]
+		and _near(recibidos[1][1]["secs"], 4.5), str(recibidos));
+
+	# --- (5) `R` con la run viva: run_end abandon con screen none, y luego el package_select.
+	recibidos.clear();
+	var tecla = InputEventKey.new();
+	tecla.keycode = KEY_R;
+	tecla.pressed = true;
+	main._unhandled_input(tecla);
+	var re = _filas_de(recibidos, "run_end");
+	var fin = re[0] if re.size() == 1 else {};
+	_check("R emite un run_end abandon con screen none", re.size() == 1
+		and fin.get("result") == "abandon" and fin.get("screen") == "none", str(re));
+	# Desde M3 el WoodCutter de las ruinas cuenta: es el único que el jugador construyó.
+	_check("con el censo de M2: checkpoints 1, cards_chosen 2, belt_cells de la red, y el WoodCutter de las ruinas (M3)",
+		fin.get("checkpoints") == 1 and fin.get("cards_chosen") == 2
+		and typeof(fin.get("belt_cells")) == TYPE_INT and fin.get("built_total") == 1
+		and fin.get("demolished_total") == 0 and fin.get("built_WoodCutter") == 1
+		and typeof(fin.get("left_wood")) == TYPE_INT and fin.get("map") == main._run_map_id, str(fin));
+	_check("y después se abre el package_select con su ui_open",
+		_nombres_de(recibidos) == ["run_end", "ui_open"] and recibidos[1][1]["screen"] == "package_select",
+		str(_nombres_de(recibidos)));
+	_check("el run_id del run_end es el del run_start", fin.get("run_id", "") == rs.get("run_id", "-"));
+	recibidos.clear();
+	main._end_run("abandon");
+	main._unhandled_input(tecla);
+	# Desde Serialización M4 la R sin run montada no hace nada —ni reabre el package_select—:
+	# antes reiniciaba igual y volvía a mandar el ui_open.
+	_check("un segundo cierre (otra R, o ganar tras abandonar) no emite nada",
+		_nombres_de(recibidos).is_empty() and not main.analytics.has_run(), str(_nombres_de(recibidos)));
+	paused = false;
+	var ml = main.mapLoader;
+	_limpiar([main]);
+	for n in [placer, ml]:
+		if is_instance_valid(n) and n is Node:
+			n.free();
+
+	# --- (6) Todo con el mismo run_id: una run completa sin cortes, del run_start al run_end.
+	var main2 = _main_para_run();
+	var todos = [];
+	main2.analytics.sink = func(n, p): todos.append([n, p]);
+	main2._start_game("standard");
+	var gm2 = main2.gameManager;
+	gm2.current_checkpoint_index = 1;
+	gm2.last_checkpoint_time = 30.0;
+	gm2.checkpoint_reached.emit(["speed_woodcutter", "extra_wood", "more_workers"], {}, []);
+	main2.get_node("UpgradeScreen")._on_upgrade_chosen("extra_wood");
+	# Una carta concedida y una casilla tóxica que vuelve a suelo, por sus caminos de Main.
+	main2._apply_granted_upgrades(["more_workers"]);
+	var tm2 = main2.get_node("TileMap");
+	var toxica = Vector2i(0, 0);
+	tm2.cell_types[toxica] = "toxic";
+	main2.pollutionManager.pollution_per_cell[toxica] = 0.0;
+	main2._check_toxic_unlock(tm2);
+	main2._end_run("abandon");
+	var ids = {};
+	var de_run = [];
+	for r in todos:
+		if r[0] == "ui_open":
+			continue;
+		de_run.append(r[0]);
+		ids[r[1].get("run_id", "")] = true;
+	_check("run_start → checkpoint_reached → 3 × card_offered → card_granted → cell_restored → run_end, mismo run_id",
+		de_run == ["run_start", "checkpoint_reached", "card_offered", "card_offered", "card_offered",
+			"card_granted", "cell_restored", "run_end"]
+		and ids.size() == 1 and not ids.has(""), "%s %s" % [str(de_run), str(ids.keys())]);
+	var cg = _filas_de(todos, "card_granted");
+	var cz = _filas_de(todos, "cell_restored");
+	_check("card_granted lleva carta y checkpoint; cell_restored la casilla",
+		cg.size() == 1 and cg[0]["card"] == "more_workers" and cg[0]["checkpoint"] == 1
+		and cz.size() == 1 and cz[0]["cx"] == 0 and cz[0]["cy"] == 0, "%s %s" % [str(cg), str(cz)]);
+	paused = false;
+	var placer2 = main2.placer;
+	var ml2 = main2.mapLoader;
+	_limpiar([main2]);
+	for n in [placer2, ml2]:
+		if is_instance_valid(n) and n is Node:
+			n.free();
+
+	# --- (7) El gameManager: la ventana se anuncia al abrirse, se cierra como recuperada o como
+	# perdida (ANTES de run_lost, con la run aún viva para la analítica) y nunca dos veces.
+	var gracia = load("res://managers/gameManager.gd").DEADLOCK_GRACE;
+	var centro = Vector2i(5, 5);
+	var pm = _new_pm();
+	var esc = _escenario_muerto(file_data, centro, pm);
+	esc["pm"] = pm;
+	var g = esc["gm"];
+	var orden = [];
+	g.deadlock_opened.connect(func(): orden.append(["opened"]));
+	g.deadlock_closed.connect(func(secs, lost): orden.append(["closed", secs, lost]));
+	g.run_lost.connect(func(_stats): orden.append(["lost"]));
+	var t0 = 10.0;
+	g.run_time = t0;
+	g.update(esc["bag"], pm);
+	_check("abrir la ventana emite deadlock_opened una vez", orden == [["opened"]], str(orden));
+	var t = _correr_hasta(esc, t0, t0 + gracia + 0.1);
+	_check("al perder: deadlock_closed(secs≈gracia, lost) y DESPUÉS run_lost",
+		orden.size() == 3 and orden[1][0] == "closed" and orden[1][2] == true
+		and orden[1][1] >= gracia and orden[1][1] < gracia + 0.1 and orden[2] == ["lost"], str(orden));
+	_correr_hasta(esc, t, t + 1.0);
+	g.reset();
+	_check("y ni más frames ni reset() lo vuelven a cerrar", orden.size() == 3, str(orden));
+	_limpiar([esc["tm"], g, esc["bag"], pm]);
+
+	var pm2 = _new_pm();
+	var esc2 = _escenario_muerto(file_data, centro, pm2);
+	esc2["pm"] = pm2;
+	var g2 = esc2["gm"];
+	var orden2 = [];
+	g2.deadlock_opened.connect(func(): orden2.append(["opened"]));
+	g2.deadlock_closed.connect(func(secs, lost): orden2.append(["closed", secs, lost]));
+	g2.run_time = t0;
+	g2.update(esc2["bag"], pm2);
+	var t2 = _correr_hasta(esc2, t0, t0 + 5.0);
+	esc2["bag"].addToBag("wood", 1);
+	_correr_hasta(esc2, t2, t2 + 1.0 / 60.0);
+	_check("producir cierra la ventana como recuperada, con los segundos que estuvo abierta",
+		orden2.size() >= 2 and orden2[0] == ["opened"] and orden2[1][0] == "closed"
+		and orden2[1][2] == false and absf(orden2[1][1] - 5.0) < 0.1, str(orden2));
+	var n_antes = orden2.size();
+	g2.deadlock_timer = 0.0;
+	g2._deadlock_announced = false;
+	g2._reset_deadlock();
+	_check("_reset_deadlock() sin ventana anunciada no emite", orden2.size() == n_antes, str(orden2));
+	_limpiar([esc2["tm"], g2, esc2["bag"], pm2]);
+
+	# --- (8) last_tier y last_segment_rate: el gameManager los escribe al cerrar de verdad un
+	# checkpoint, antes de emitir.
+	var g3 = _new_gm(file_data, [
+		{ "material": "wood", "quantity": 5, "label": "Uno" },
+		{ "material": "wood", "quantity": 999, "label": "Dos" },
+	]);
+	var bolsa3 = _new_bag();
+	bolsa3.initialize(file_data);
+	bolsa3.addToBag("wood", 10.0);
+	var visto = [];
+	g3.checkpoint_reached.connect(func(_o, _r, _gr): visto.append([g3.last_tier, g3.last_segment_rate]));
+	g3.run_time = 3.0;
+	g3.update(bolsa3, null);
+	_check("cerrar un checkpoint deja last_tier (1-2) y last_segment_rate (float) escritos al emitir",
+		visto.size() == 1 and (visto[0][0] == 1 or visto[0][0] == 2) and typeof(visto[0][1]) == TYPE_FLOAT,
+		str(visto));
+	_limpiar([g3, bolsa3]);
+
+# ---------- Analítica M3: las acciones del jugador ----------
+
+# Los doce eventos de acción por sus caminos de Main, con el `sink` falso. Lo que va por el ratón
+# (arrastre de cinta, click rechazado, borrar cinta) se conduce por `_unhandled_input()` moviendo
+# el TileMap para que la casilla pedida quede bajo el cursor, que headless no se mueve.
+const ANALITICA_ACCION = ["factory_built", "factory_demolished", "belt_placed", "belt_removed",
+	"belt_rejected", "radial_closed", "build_rejected", "click_rejected", "panel_opened",
+	"workers_changed", "material_selected", "belt_filter_set", "run_start", "run_end"];
+
+func _solo_accion_y_ciclo(recibidos):
+	return _nombres_de(recibidos).filter(func(n): return ANALITICA_ACCION.has(n));
+
+# Primera casilla de una fila de `n` libres y de suelo normal (sin tipo), con las filas de arriba
+# y de abajo también libres si `aislada` (para que nada vecino meta sinergias).
+func _fila_libre(main, n, aislada = true):
+	var tm = main.get_node("TileMap");
+	var celdas = tm.get_used_cells(0);
+	celdas.sort();
+	for c in celdas:
+		var ok = true;
+		var borde = 1 if aislada else 0;
+		for i in range(-borde, n + borde):
+			for dy in ([-1, 0, 1] if aislada else [0]):
+				var cc = c + Vector2i(i, dy);
+				if tm.cell_types.has(cc) or not tm.canPlaceFactory(cc, main.factoryArray):
+					ok = false;
+					break;
+			if not ok:
+				break;
+		if ok:
+			return c;
+	return null;
+
+# Pone `cell` bajo el cursor: el cursor headless no se mueve, así que se mueve el TileMap.
+func _apuntar(tm, cell):
+	tm.position = tm.get_global_mouse_position() - tm.map_to_local(cell);
+
+func _raton(boton, pulsado):
+	var ev = InputEventMouseButton.new();
+	ev.button_index = boton;
+	ev.pressed = pulsado;
+	return ev;
+
+func _arrastrar(main, tm, desde, hasta):
+	_apuntar(tm, desde);
+	main._unhandled_input(_raton(MOUSE_BUTTON_LEFT, true));
+	_apuntar(tm, hasta);
+	main._unhandled_input(_raton(MOUSE_BUTTON_LEFT, false));
+
+func _vaciar_bolsa(bag):
+	for m in ["wood", "plank", "stone"]:
+		bag.removeFromBag(m, bag.getQuantity(m));
+
+func _liberar_main(main):
+	paused = false;
+	var placer = main.placer;
+	var ml = main.mapLoader;
+	_limpiar([main]);
+	for n in [placer, ml]:
+		if is_instance_valid(n) and n is Node:
+			n.free();
+
+func _test_analitica_m3(file_data):
+	print("Analítica M3 — acciones del jugador: construir, demoler, cintas, radial, rechazos y panel");
+
+	# --- (1) SECUENCIA: begin_run → construir un WoodCutter por _on_factory_chosen → demolerlo →
+	# end_run("abandon"): exactamente cuatro eventos, con el mismo run_id.
+	var main = _main_para_run();
+	var recibidos = [];
+	main.analytics.sink = func(n, p): recibidos.append([n, p]);
+	main._start_game("standard");
+	var celda = _fila_libre(main, 1);
+	_check("el mapa tiene una casilla libre para la secuencia", celda != null);
+	if celda == null:
+		_liberar_main(main);
+		return;
+	main.gameManager.run_time = 5.0;
+	main._on_factory_chosen("WoodCutter", celda);
+	main.gameManager.run_time = 12.5;
+	main._demolish_at_cell(celda);
+	main._end_run("abandon");
+	_check("secuencia: run_start, factory_built, factory_demolished, run_end y nada más",
+		_nombres_de(recibidos) == ["run_start", "factory_built", "factory_demolished", "run_end"],
+		str(_nombres_de(recibidos)));
+	var fb = _filas_de(recibidos, "factory_built");
+	var fd = _filas_de(recibidos, "factory_demolished");
+	var fin = _filas_de(recibidos, "run_end");
+	var b = fb[0] if fb.size() == 1 else {};
+	var d = fd[0] if fd.size() == 1 else {};
+	var e = fin[0] if fin.size() == 1 else {};
+	_check("run_end trae built_WoodCutter 1, built_total 1 y demolished_total 1",
+		e.get("built_WoodCutter") == 1 and e.get("built_total") == 1 and e.get("demolished_total") == 1, str(e));
+	var ids = {};
+	for r in recibidos:
+		ids[r[1].get("run_id", "")] = true;
+	_check("los cuatro con el mismo run_id", ids.size() == 1 and not ids.has(""), str(ids.keys()));
+	_check("factory_built: factoría, casilla, tile plain, n_synergies 0 y paid_wood del recibo",
+		b.get("factory") == "WoodCutter" and b.get("cx") == celda.x and b.get("cy") == celda.y
+		and b.get("tile") == "plain" and b.get("n_synergies") == 0
+		and b.get("paid_wood") == int(file_data["Factories"]["WoodCutter"]["cost"]["wood"])
+		and typeof(b.get("paid_wood")) == TYPE_INT, str(b));
+	_check("factory_demolished: casilla, age_s desde la construcción y refund_wood = floor(pagado/2)",
+		d.get("factory") == "WoodCutter" and d.get("cx") == celda.x and _near(d.get("age_s", -1.0), 7.5)
+		and d.get("refund_wood") == int(file_data["Factories"]["WoodCutter"]["cost"]["wood"]) / 2, str(d));
+	recibidos.clear();
+	main._end_run("abandon");
+	_check("un segundo end_run no emite", recibidos.is_empty(), str(_nombres_de(recibidos)));
+	_liberar_main(main);
+
+	# --- (2) Radial: closed(built) una sola vez por cierre; built 1 al elegir, 0 con fondo/ESC.
+	main = _main_para_run();
+	recibidos = [];
+	main.analytics.sink = func(n, p): recibidos.append([n, p]);
+	main._start_game("standard");
+	var tm = main.get_node("TileMap");
+	var bag = main.get_node("Player/Bag");
+	var fila = _fila_libre(main, 7, false);
+	_check("el mapa tiene una fila libre de 7 casillas", fila != null);
+	if fila == null:
+		_liberar_main(main);
+		return;
+	recibidos.clear();
+	main._show_radial_menu(fila);
+	var radial = main.get_node_or_null("RadialMenu");
+	var n_opc = _opciones_del_radial(main).size();
+	if radial != null:
+		radial._on_factory_pressed("WoodCutter");
+		radial._on_bg_input(_raton(MOUSE_BUTTON_LEFT, true));
+	var rc = _filas_de(recibidos, "radial_closed");
+	_check("elegir en el radial: factory_built y después UN radial_closed con built 1",
+		_solo_accion_y_ciclo(recibidos) == ["factory_built", "radial_closed"] and rc.size() == 1
+		and rc[0]["built"] == 1 and rc[0]["cx"] == fila.x and rc[0]["cy"] == fila.y, str(recibidos));
+	_check("radial_closed lleva n_options (%d) y n_affordable (<= n_options)" % n_opc,
+		rc.size() == 1 and rc[0]["n_options"] == n_opc and n_opc > 0
+		and rc[0]["n_affordable"] >= 1 and rc[0]["n_affordable"] <= n_opc, str(rc));
+	recibidos.clear();
+	var sin_dinero = fila + Vector2i(6, 0);
+	var guardado = {};
+	for m in ["wood", "plank", "stone"]:
+		guardado[m] = bag.getQuantity(m);
+	_vaciar_bolsa(bag);
+	main._show_radial_menu(sin_dinero);
+	radial = main.get_child(main.get_child_count() - 1);
+	var esc = InputEventKey.new();
+	esc.keycode = KEY_ESCAPE;
+	esc.pressed = true;
+	if radial.has_signal("closed"):
+		radial._unhandled_input(esc);
+		radial._on_bg_input(_raton(MOUSE_BUTTON_LEFT, true));
+		radial._unhandled_input(esc);
+	rc = _filas_de(recibidos, "radial_closed");
+	_check("ESC y luego click de fondo en el mismo frame: UN radial_closed con built 0",
+		_solo_accion_y_ciclo(recibidos) == ["radial_closed"] and rc.size() == 1 and rc[0]["built"] == 0,
+		str(recibidos));
+	_check("y sin dinero n_affordable 0", rc.size() == 1 and rc[0]["n_affordable"] == 0, str(rc));
+
+	# --- (3) build_rejected: casilla ocupada (cell_invalid) y sin dinero (no_money).
+	recibidos.clear();
+	main._on_factory_chosen("WoodCutter", sin_dinero);
+	main._on_factory_chosen("WoodCutter", fila);
+	var br = _filas_de(recibidos, "build_rejected");
+	_check("build_rejected: no_money sin dinero, cell_invalid sobre casilla ocupada, y nada construido",
+		_solo_accion_y_ciclo(recibidos) == ["build_rejected", "build_rejected"]
+		and br[0]["reason"] == "no_money" and br[1]["reason"] == "cell_invalid"
+		and br[0]["factory"] == "WoodCutter", str(recibidos));
+	for m in guardado:
+		bag.addToBag(m, guardado[m]);
+
+	# --- (4) Cintas por el gesto real: no_fit (factoría en medio del tramo recto), no_money (sin
+	# madera, cabía) y belt_placed; y el derecho sobre la cinta, belt_removed.
+	var a = fila + Vector2i(1, 0);
+	var z = fila + Vector2i(5, 0);
+	main._on_factory_chosen("WoodCutter", fila + Vector2i(3, 0));
+	recibidos.clear();
+	_arrastrar(main, tm, a, z);
+	main._demolish_at_cell(fila + Vector2i(3, 0));
+	guardado = {};
+	for m in ["wood", "plank", "stone"]:
+		guardado[m] = bag.getQuantity(m);
+	_vaciar_bolsa(bag);
+	_arrastrar(main, tm, a, z);
+	for m in guardado:
+		bag.addToBag(m, guardado[m]);
+	var madera_antes = bag.getQuantity("wood");
+	_arrastrar(main, tm, a, z);
+	var bj = _filas_de(recibidos, "belt_rejected");
+	var bp = _filas_de(recibidos, "belt_placed");
+	_check("arrastre que no cabe: belt_rejected no_fit con el largo del gesto (5)",
+		bj.size() == 2 and bj[0]["reason"] == "no_fit" and bj[0]["cells"] == 5, str(bj));
+	_check("arrastre que cabía sin madera: belt_rejected no_money", bj.size() == 2 and bj[1]["reason"] == "no_money",
+		str(bj));
+	_check("arrastre tendido: belt_placed con extremos, 5 celdas y paid_wood = lo cobrado",
+		bp.size() == 1 and bp[0]["x0"] == a.x and bp[0]["y0"] == a.y and bp[0]["x1"] == z.x
+		and bp[0]["y1"] == z.y and bp[0]["cells"] == 5
+		and bp[0]["paid_wood"] == int(round(madera_antes - bag.getQuantity("wood"))) and bp[0]["paid_wood"] > 0,
+		"%s gastado %s" % [str(bp), str(madera_antes - bag.getQuantity("wood"))]);
+	recibidos.clear();
+	_apuntar(tm, a + Vector2i(1, 0));
+	main._unhandled_input(_raton(MOUSE_BUTTON_RIGHT, true));
+	var bo = _filas_de(recibidos, "belt_removed");
+	_check("derecho sobre la cinta: belt_removed con su casilla",
+		_solo_accion_y_ciclo(recibidos) == ["belt_removed"] and bo[0]["cx"] == a.x + 1 and bo[0]["cy"] == a.y,
+		str(recibidos));
+
+	# --- (5) click_rejected: casilla sin sitio (con tipo), saturada, y fuera del mapa no cuenta.
+	var bloqueada = null;
+	for c in tm.cell_types:
+		if not tm.canPlaceAnyFactory(c, main.factoryArray) and main._get_factory_at_cell(c) == null \
+				and not main.beltNetwork.belts.has(c):
+			bloqueada = c;
+			break;
+	recibidos.clear();
+	if bloqueada != null:
+		_apuntar(tm, bloqueada);
+		main._unhandled_input(_raton(MOUSE_BUTTON_LEFT, true));
+		main._unhandled_input(_raton(MOUSE_BUTTON_LEFT, false));
+	if bloqueada != null:
+		main.pollutionManager.pollution_per_cell[bloqueada] = float(main.pollutionManager.cell_block_pollution) * 2.0;
+		main._unhandled_input(_raton(MOUSE_BUTTON_LEFT, true));
+		main._unhandled_input(_raton(MOUSE_BUTTON_LEFT, false));
+		main.pollutionManager.pollution_per_cell.erase(bloqueada);
+	_apuntar(tm, Vector2i(-500, -500));
+	main._unhandled_input(_raton(MOUSE_BUTTON_LEFT, true));
+	main._unhandled_input(_raton(MOUSE_BUTTON_LEFT, false));
+	var ck = _filas_de(recibidos, "click_rejected");
+	_check("el mapa tiene una casilla con tipo donde no cabe nada (%s)" % str(bloqueada), bloqueada != null);
+	_check("click sobre ella: click_rejected con su tile y saturated 0; saturada, saturated 1",
+		ck.size() == 2 and bloqueada != null and ck[0]["cx"] == bloqueada.x and ck[0]["cy"] == bloqueada.y
+		and ck[0]["tile"] == tm.cell_types[bloqueada] and ck[0]["saturated"] == 0
+		and ck[1]["saturated"] == 1 and ck[1]["tile"] == ck[0]["tile"], str(ck));
+	_check("click fuera del mapa: no hay casilla y no se manda (%d filas)" % ck.size(), ck.size() == 2);
+	var r_abierto = main.get_node_or_null("RadialMenu");
+	if r_abierto != null:
+		main.remove_child(r_abierto);
+		r_abierto.free();
+	tm.position = Vector2.ZERO;
+	_liberar_main(main);
+
+	# --- (6) El panel: panel_opened con la razón que enseña y las tres señales SOLO si se aplican.
+	main = _main_para_run();
+	recibidos = [];
+	main.analytics.sink = func(n, p): recibidos.append([n, p]);
+	main._start_game("standard");
+	bag = main.get_node("Player/Bag");
+	fila = _fila_libre(main, 5, false);
+	main._on_factory_chosen("Foundry", fila);
+	var fundicion = main._get_factory_at_cell(fila);
+	_check("se construye una Foundry para probar el panel", fundicion != null);
+	if fundicion == null:
+		_liberar_main(main);
+		return;
+	main.beltNetwork.place_drag(fila, fila + Vector2i(3, 0), main.factoryArray);
+	bag.addWorkers(2);
+	recibidos.clear();
+	main._show_factory_panel(fundicion);
+	var panel = main.get_node("FactoryPanel");
+	var po = _filas_de(recibidos, "panel_opened");
+	_check("panel_opened: factoría, casilla y blocked none (build() ya le dio su worker)",
+		po.size() == 1 and po[0]["factory"] == "Foundry" and po[0]["cx"] == fila.x and po[0]["cy"] == fila.y
+		and po[0]["blocked"] == "none" and fundicion.workers_assigned == 1, str(po));
+	recibidos.clear();
+	panel.unassign_one();
+	panel.unassign_one();
+	panel.assign_one();
+	panel.assign_one();
+	var wc = _filas_de(recibidos, "workers_changed");
+	_check("workers_changed solo en los dos movimientos aplicados: −1 (assigned 0) y +1 (assigned 1)",
+		_solo_accion_y_ciclo(recibidos) == ["workers_changed", "workers_changed"]
+		and wc[0]["delta"] == -1 and wc[0]["assigned"] == 0 and wc[1]["delta"] == 1 and wc[1]["assigned"] == 1
+		and wc[0]["factory"] == "Foundry", str(recibidos));
+	panel.unassign_one();
+	# El panel viejo se libera ya: en el juego su queue_free() llega al final del frame, y aquí
+	# seguiría conectado a la red fuera del árbol durante el resto de la prueba.
+	main.remove_child(panel);
+	panel.free();
+	recibidos.clear();
+	main._show_factory_panel(fundicion);
+	panel = main.get_node("FactoryPanel");
+	po = _filas_de(recibidos, "panel_opened");
+	_check("sin su worker, panel_opened dice blocked workers (la razón que enseña blockedReason)",
+		po.size() == 1 and po[0]["blocked"] == "workers", str(po));
+	recibidos.clear();
+	var idx_glass = fundicion.production_candidates.find("glass");
+	panel._on_material_selected(idx_glass);
+	panel._on_material_selected(idx_glass);
+	panel._on_material_selected(99);
+	var ms = _filas_de(recibidos, "material_selected");
+	_check("material_selected solo al cambiar de verdad (glass), no al repetir ni fuera de rango",
+		_solo_accion_y_ciclo(recibidos) == ["material_selected"] and ms[0]["material"] == "glass"
+		and ms[0]["factory"] == "Foundry", str(recibidos));
+	recibidos.clear();
+	var celda_cinta = panel._belt_cell;
+	panel._on_belt_filter_selected(1);
+	var filtro = panel._belt_option.get_item_text(1) if panel._belt_option != null else "";
+	panel._on_belt_filter_selected(1);
+	panel._on_belt_filter_selected(0);
+	var bf = _filas_de(recibidos, "belt_filter_set");
+	_check("belt_filter_set solo al cambiar el filtro: %s y luego any (repetir no emite)" % filtro,
+		celda_cinta != null and _solo_accion_y_ciclo(recibidos) == ["belt_filter_set", "belt_filter_set"]
+		and bf[0]["material"] == filtro and bf[1]["material"] == "any"
+		and bf[0]["cx"] == celda_cinta.x and bf[0]["cy"] == celda_cinta.y, str(recibidos));
+	main._end_run("abandon");
+	recibidos.clear();
+	panel.assign_one();
+	_check("sin run viva las señales del panel no mandan nada", recibidos.is_empty(), str(recibidos));
+	_liberar_main(main);
+
+	# --- (7) Enmienda de M2: checkpoint_reached.rate se omite con el −1.0 centinela.
+	main = _main_para_run();
+	recibidos = [];
+	main.analytics.sink = func(n, p): recibidos.append([n, p]);
+	main._start_game("standard");
+	var gm = main.gameManager;
+	for caso in [[-1.0, false], [0.0, true], [0.4, true]]:
+		recibidos.clear();
+		gm.current_checkpoint_index += 1;
+		gm.last_segment_rate = caso[0];
+		gm.checkpoint_reached.emit(["speed_woodcutter", "more_workers", "extra_wood"], {}, []);
+		var cr = _filas_de(recibidos, "checkpoint_reached");
+		_check("checkpoint_reached con last_segment_rate %s %s rate" % [str(caso[0]), "lleva" if caso[1] else "sale sin"],
+			cr.size() == 1 and cr[0].has("rate") == caso[1]
+			and (not caso[1] or _near(cr[0]["rate"], caso[0])), str(cr));
+		var pantalla = main.get_node_or_null("UpgradeScreen");
+		if pantalla != null:
+			pantalla._on_upgrade_chosen("more_workers");
+			main.remove_child(pantalla);
+			pantalla.free();
+		paused = false;
+	_liberar_main(main);
+
+# ---------- Analítica M4: la muestra de estado ----------
+
+# `run_sample` cada 10 s de `gameManager.run_time`, con el `sink` falso. El `run_time` se mueve a
+# mano y se llama a `analytics._process()` como lo haría el árbol: headless no pasan frames
+# mientras corre la suite.
+func _muestras(recibidos):
+	return _filas_de(recibidos, "run_sample");
+
+# Avanza el `run_time` de `gm` hasta `hasta` en pasos de `paso` (asignado, no acumulado, para que
+# 600 pasos de 1/60 den 10.0 exacto) y deja a `analytics` muestrear en cada uno.
+func _correr_run(main, desde, hasta, paso):
+	var i = int(round(desde / paso));
+	var fin = int(round(hasta / paso));
+	while i < fin:
+		i += 1;
+		main.gameManager.run_time = i * paso;
+		main.analytics._process(paso);
+
+func _test_analitica_m4(file_data):
+	print("Analítica M4 — run_sample cada 10 s de run_time, congelado con las cartas y sin run viva");
+
+	# --- (1) 35 s de run en frames de 0,5 s: tres muestras con run_t 10/20/30.
+	var main = _main_para_run();
+	var recibidos = [];
+	main.analytics.sink = func(n, p): recibidos.append([n, p]);
+	main._start_game("standard");
+	var a = main.analytics;
+	_check("Analytics va en PROCESS_MODE_INHERIT (con el árbol pausado no muestrea)",
+		a.process_mode == Node.PROCESS_MODE_INHERIT);
+	paused = true;
+	var pausado = a.can_process();
+	paused = false;
+	_check("y con el árbol pausado can_process() es false", not pausado);
+	_correr_run(main, 0.0, 35.0, 0.5);
+	var ms = _muestras(recibidos);
+	var ts = ms.map(func(m): return m["run_t"]);
+	_check("35 s de run dan 3 run_sample con run_t 10/20/30", ts.size() == 3
+		and _near(ts[0], 10.0) and _near(ts[1], 20.0) and _near(ts[2], 30.0), str(ts));
+	_check("todas con el run_id de la run", ms.all(func(m): return m["run_id"] == a.run_id()));
+
+	# --- (2) Las props: todas las del catálogo, y las familias en enteros.
+	var m0 = ms[0] if ms.size() > 0 else {};
+	var faltan = [];
+	for p in a.events["run_sample"]["props"]:
+		if not m0.has(p):
+			faltan.append(p);
+	_check("una muestra de una run de verdad lleva todas las props del catálogo", faltan.is_empty(), str(faltan));
+	var no_int = [];
+	for p in m0:
+		if (p.begins_with("stock_") or p.begins_with("avail_") or p.begins_with("n_")) \
+				and typeof(m0[p]) != TYPE_INT:
+			no_int.append(p);
+	_check("stock_*/avail_*/n_* traen enteros", not m0.is_empty() and no_int.is_empty(), str(no_int));
+	var bag = main.get_node("Player").get_node("Bag");
+	_check("stock_wood/avail_wood/workers_total son los de la Bag",
+		m0.get("stock_wood", -1) == int(bag.getQuantity("wood"))
+		and m0.get("avail_wood", -1) == int(bag.getAvailable("wood"))
+		and m0.get("workers_total", -1) == int(bag.workers_total), str(m0));
+	_check("n_Storage cuenta el almacén inicial del mapa", m0.get("n_Storage", 0) >= 1, str(m0.get("n_Storage")));
+	var suma_n = 0;
+	for f in a.enums["factory"]:
+		suma_n += m0.get("n_" + f, 0);
+	_check("la suma de n_* es el tamaño del factoryArray vivo", suma_n == main.factoryArray.size(),
+		"%d vs %d" % [suma_n, main.factoryArray.size()]);
+	recibidos.clear();
+	var construida = a.build_sample();
+	_check("build_sample() de una run de verdad pasa el validador del catálogo",
+		a.track("run_sample", construida) and _nombres_de(recibidos) == ["run_sample"], str(construida));
+
+	# --- (3) El array de factorías es el vivo: construir se ve en la siguiente muestra.
+	var celda = _fila_libre(main, 1);
+	var antes = a.build_sample().get("n_WoodCutter", -1);
+	if celda != null:
+		main._on_factory_chosen("WoodCutter", celda);
+	_check("construir un WoodCutter sube n_WoodCutter en uno (analytics ve el factoryArray vivo)",
+		celda != null and a.build_sample().get("n_WoodCutter", -1) == antes + 1);
+
+	# --- (4) idle_s: 10 en la primera muestra sin acciones; a cero tras un evento de acción.
+	_check("idle_s de la 1.ª muestra = 10 (ninguna acción desde el run_start)",
+		ms.size() > 0 and _near(ms[0]["idle_s"], 10.0), str(ms[0].get("idle_s") if ms.size() > 0 else null));
+	recibidos.clear();
+	main.gameManager.run_time = 35.0;
+	a.track("click_rejected", {});
+	_correr_run(main, 35.0, 40.0, 0.5);
+	ms = _muestras(recibidos);
+	_check("tras un evento de acción a los 35 s, la muestra de los 40 s trae idle_s = 5",
+		ms.size() == 1 and _near(ms[0]["run_t"], 40.0) and _near(ms[0]["idle_s"], 5.0), str(ms));
+
+	# --- (5) Cartas: con `active = false` el run_time no avanza por el camino real y no sale nada.
+	recibidos.clear();
+	var gm = main.gameManager;
+	gm.active = false;
+	for i in range(120):
+		gm._process(0.5);
+		a._process(0.5);
+	_check("con gameManager.active = false (cartas) 60 s de frames no dan ninguna muestra",
+		_muestras(recibidos).is_empty() and _near(gm.run_time, 40.0), "run_time %s" % str(gm.run_time));
+	gm.active = true;
+	for i in range(20):
+		gm._process(0.5);
+		a._process(0.5);
+	ms = _muestras(recibidos);
+	_check("al cerrar las cartas sigue la rejilla: la siguiente sale a los 50 s de run_time",
+		ms.size() == 1 and _near(ms[0]["run_t"], 50.0), str(ms.map(func(m): return m["run_t"])));
+
+	# --- (6) Un frame largo que salta dos umbrales da UNA muestra, y la rejilla sigue en 10.
+	recibidos.clear();
+	gm.run_time = 75.0;
+	a._process(25.0);
+	gm.run_time = 80.0;
+	a._process(5.0);
+	ts = _muestras(recibidos).map(func(m): return m["run_t"]);
+	_check("un salto de 50 a 75 s da una muestra (75) y la siguiente sale a los 80",
+		ts.size() == 2 and _near(ts[0], 75.0) and _near(ts[1], 80.0), str(ts));
+
+	# --- (7) Sin run viva, ninguna.
+	main._end_run("abandon");
+	recibidos.clear();
+	_correr_run(main, 80.0, 120.0, 0.5);
+	_check("sin run viva (tras end_run) 40 s de run_time no dan ninguna muestra", recibidos.is_empty(), str(recibidos));
+	_liberar_main(main);
+
+	# --- (8) Con el gameManager liberado (reset() sin end_run) no se toca nada ni sale muestra.
+	main = _main_para_run();
+	recibidos = [];
+	main.analytics.sink = func(n, p): recibidos.append([n, p]);
+	main._start_game("standard");
+	a = main.analytics;
+	gm = main.gameManager;
+	gm.run_time = 30.0;
+	main.remove_child(gm);
+	gm.free();
+	main.gameManager = null;
+	recibidos.clear();
+	a._process(0.5);
+	_check("con el gameManager liberado y la run viva _process no muestrea", recibidos.is_empty(), str(recibidos));
+	a.end_run("abandon");
+	_liberar_main(main);
+
+	# --- (9) 3 min de run a 60 fps: cuántas muestras salen y con qué separación.
+	main = _main_para_run();
+	recibidos = [];
+	main.analytics.sink = func(n, p): recibidos.append([n, p]);
+	main._start_game("standard");
+	_correr_run(main, 0.0, 180.0, 1.0 / 60.0);
+	ts = _muestras(recibidos).map(func(m): return m["run_t"]);
+	var separadas = true;
+	for i in range(ts.size()):
+		var previo = ts[i - 1] if i > 0 else 0.0;
+		if abs(ts[i] - previo - 10.0) > 1.0 / 60.0 + 0.0001:
+			separadas = false;
+	print("  (3 min a 60 fps: %d run_sample, run_t %s)" % [ts.size(), str(ts)]);
+	_check("3 min de run a 60 fps dan 18 run_sample (10…180) separadas 10 s ±1 frame",
+		ts.size() == 18 and separadas, str(ts));
+	main._end_run("abandon");
+	_liberar_main(main);
+
+# ---------- Legibilidad M0: el rendimiento parcial y `segment_rate` ----------
+
+# `gameManager.segmentLiveRate()` (el parcial del tramo, sin calentamiento) y el evento que lo graba
+# cada 1 s de `run_time`, con el `sink` falso de las pruebas de Analítica. Es la instrumentación
+# con la que se decide en M0b si el porcentaje en vivo es honesto.
+func _test_legibilidad_m0(file_data):
+	print("Legibilidad M0 — segmentLiveRate() y segment_rate cada 1 s de run_time");
+
+	# --- (1) segmentLiveRate() a pie, con un gameManager suelto: -1.0 sin integral, lo producido
+	# en el tramo sobre la integral del techo con ella, y el mismo cociente que deja el cierre.
+	var gm = _new_gm(file_data, [
+		{ "material": "plank", "quantity": 40, "label": "Uno" },
+		{ "material": "plank", "quantity": 999, "label": "Dos" },
+	]);
+	var bag = _new_bag();
+	bag.initialize(file_data);
+	var linea = _new_productora("WoodProcessing", "plank", 2);    # 0,5 plank/s
+	gm.setFactories([linea]);
+	_check("sin integral (el tramo no ha corrido) segmentLiveRate() vale -1.0",
+		_near(gm.segmentLiveRate(bag), -1.0), str(gm.segmentLiveRate(bag)));
+	for i in range(20):
+		gm.run_time = float(i + 1);
+		gm.update(bag);
+	bag.addToBag("plank", 5);
+	_check("5 plank sobre un techo de 0,5/s durante 20 s: segmentLiveRate() = 5 / 10 = 0,5",
+		_near(gm.segmentLiveRate(bag), 0.5), str(gm.segmentLiveRate(bag)));
+	_check("sin bolsa y sin Player del que sacarla, -1.0", _near(gm.segmentLiveRate(), -1.0));
+	# Justo antes de cerrar: se completa el objetivo sin mover `run_time`, así que la muestra del
+	# update que cierra no añade integral y lo que se lee aquí es lo que juzga el cierre.
+	bag.addToBag("plank", 35);
+	var antes = gm.segmentLiveRate(bag);
+	var cerrado = [];
+	gm.checkpoint_reached.connect(func(_o, _r, _g): cerrado.append(gm.last_segment_rate));
+	gm.update(bag);
+	_check("segmentLiveRate() justo antes de cerrar vale el last_segment_rate que deja el cierre (4,0)",
+		cerrado.size() == 1 and _near(antes, cerrado[0]) and _near(antes, 4.0),
+		"antes %s, cierre %s" % [str(antes), str(cerrado)]);
+	_check("y al arrancar el tramo siguiente vuelve a -1.0 (la integral se ha puesto a cero)",
+		_near(gm.segmentLiveRate(bag), -1.0), str(gm.segmentLiveRate(bag)));
+	gm.production_done = true;
+	gm.segment_capacity_area = 10.0;
+	_check("fuera de la fase de producción, -1.0 aunque haya integral",
+		_near(gm.segmentLiveRate(bag), -1.0));
+	_limpiar([gm, bag, linea]);
+
+	# --- (2) segment_rate por el camino de Main: sin integral no sale nada.
+	var main = _main_para_run();
+	var recibidos = [];
+	main.analytics.sink = func(n, p): recibidos.append([n, p]);
+	main._start_game("standard");
+	var a = main.analytics;
+	gm = main.gameManager;
+	bag = main.get_node("Player").get_node("Bag");
+	gm.segment_capacity_area = 0.0;
+	_correr_run(main, 0.0, 3.0, 0.5);
+	_check("con rate -1.0 (sin integral) 3 s de run no dan ningún segment_rate",
+		_filas_de(recibidos, "segment_rate").is_empty(), str(_nombres_de(recibidos)));
+
+	# --- (3) Cadencia: con integral, uno por segundo de run_time en la rejilla 1, 2, 3…
+	gm.segment_capacity_area = 10.0;
+	recibidos.clear();
+	_correr_run(main, 3.0, 10.0, 0.25);
+	var sr = _filas_de(recibidos, "segment_rate");
+	var ts = sr.map(func(f): return f["run_t"]);
+	_check("de 3 a 10 s en frames de 0,25 s salen 7 segment_rate con run_t 4…10",
+		ts.size() == 7 and _near(ts[0], 4.0) and _near(ts[6], 10.0), str(ts));
+	var bien = sr.size() > 0;
+	for f in sr:
+		bien = bien and f["checkpoint"] == 1 and typeof(f["checkpoint"]) == TYPE_INT \
+			and _near(f["seg_t"], f["run_t"] - gm.last_checkpoint_time) \
+			and _near(f["rate"], gm.segmentLiveRate(bag)) and f["run_id"] == a.run_id();
+	_check("cada uno trae checkpoint 1 (int), seg_t = run_t − last_checkpoint_time y el rate del gameManager",
+		bien, str(sr));
+	_check("y run_sample sigue a su ritmo: uno solo, a los 10 s",
+		_filas_de(recibidos, "run_sample").map(func(f): return f["run_t"]) == [10.0],
+		str(_nombres_de(recibidos)));
+	recibidos.clear();
+	gm.run_time = 13.5;
+	a._process(3.5);
+	gm.run_time = 14.0;
+	a._process(0.5);
+	ts = _filas_de(recibidos, "segment_rate").map(func(f): return f["run_t"]);
+	_check("un frame largo de 10 a 13,5 s da UNO (13,5) y la rejilla sigue: el siguiente a los 14",
+		ts.size() == 2 and _near(ts[0], 13.5) and _near(ts[1], 14.0), str(ts));
+
+	# --- (4) El checkpoint de segment_rate es el del checkpoint_reached que cierra el tramo.
+	var cp = gm.checkpoints[gm.current_checkpoint_index];
+	var coste = gm._checkpoint_cost(cp, bag);
+	for m in coste:
+		bag.addToBag(m, coste[m]);
+	recibidos.clear();
+	gm.run_time = 15.0;
+	a._process(1.0);
+	gm.update(bag, main.pollutionManager);
+	var previos = _filas_de(recibidos, "segment_rate");
+	var cierre = _filas_de(recibidos, "checkpoint_reached");
+	_check("el último segment_rate antes del cierre lleva el checkpoint del checkpoint_reached (1)",
+		previos.size() == 1 and cierre.size() == 1 and previos[0]["checkpoint"] == cierre[0]["checkpoint"]
+		and cierre[0]["checkpoint"] == 1, "%s / %s" % [str(previos), str(cierre)]);
+	if main._offer_ids.size() > 0 and main.get_node_or_null("UpgradeScreen") != null:
+		main.get_node("UpgradeScreen")._on_upgrade_chosen(main._offer_ids[0]);
+	paused = false;
+	gm.segment_capacity_area = 10.0;
+	recibidos.clear();
+	_correr_run(main, 15.0, 18.0, 0.5);
+	sr = _filas_de(recibidos, "segment_rate");
+	var segundo = sr.size() >= 2;
+	for f in sr:
+		segundo = segundo and f["checkpoint"] == 2 and _near(f["seg_t"], f["run_t"] - 15.0);
+	_check("tras elegir carta el tramo nuevo sale con checkpoint 2 y seg_t desde el cierre",
+		gm.active and segundo, str(sr));
+
+	# --- (5) En la fase de restauración, ninguno aunque quede integral.
+	gm.production_done = true;
+	gm.segment_capacity_area = 10.0;
+	recibidos.clear();
+	_correr_run(main, 18.0, 26.0, 0.5);
+	_check("en la fase de restauración 8 s de run no dan ningún segment_rate",
+		_filas_de(recibidos, "segment_rate").is_empty(), str(_nombres_de(recibidos)));
+	main._end_run("abandon");
+	_liberar_main(main);
+
+# ---------- Legibilidad M3: el semáforo de la línea en el HUD ----------
+
+# getLiveRate() es segmentLiveRate() con WARMUP_SECONDS de silencio al arrancar el tramo, y
+# getLineState() lo traduce a «floja / ajustada / sobrada» con cortes a ±LINE_STATE_MARGIN de
+# TIER2_EFFICIENCY. Todo se escribe contra las constantes y no contra 0,45 / 0,65 / 20: las tres son
+# provisionales y la prueba tiene que seguir diciendo lo mismo si se mueven. El HUD ya hace cumplir
+# HUD_MAX_CHARS: el semáforo es lo primero que se cae y el aviso de punto muerto no se toca nunca.
+# El veredicto visual —si el estado se lee en la línea— es de quien mire el juego.
+func _test_legibilidad_m3(file_data):
+	print("Legibilidad M3 — getLiveRate(), getLineState() y el presupuesto del HUD");
+	var gm_script = load("res://managers/gameManager.gd");
+	var presupuesto = gm_script.HUD_MAX_CHARS;
+	var warmup = gm_script.WARMUP_SECONDS;
+	var liston = gm_script.TIER2_EFFICIENCY;
+	var margen = gm_script.LINE_STATE_MARGIN;
+
+	# --- (1) Los cortes, en sus bordes exactos y a un pelo por debajo.
+	var gm = _new_gm(file_data, [
+		{ "material": "plank", "quantity": 999, "label": "Checkpoint 2/5" },
+	]);
+	var bajo = liston - margen;
+	var alto = liston + margen;
+	_check("sin número (-1.0) el estado es vacío", gm._lineStateFor(-1.0) == "");
+	_check("una línea parada (0,0) está floja", gm._lineStateFor(0.0) == "floja");
+	_check("a un pelo por debajo de TIER2 − margen, floja", gm._lineStateFor(bajo - 0.000001) == "floja",
+		gm._lineStateFor(bajo - 0.000001));
+	_check("en TIER2 − margen exacto ya es ajustada", gm._lineStateFor(bajo) == "ajustada",
+		gm._lineStateFor(bajo));
+	_check("en TIER2 exacto, ajustada", gm._lineStateFor(liston) == "ajustada");
+	_check("a un pelo por debajo de TIER2 + margen, todavía ajustada",
+		gm._lineStateFor(alto - 0.000001) == "ajustada", gm._lineStateFor(alto - 0.000001));
+	_check("en TIER2 + margen exacto ya es sobrada", gm._lineStateFor(alto) == "sobrada",
+		gm._lineStateFor(alto));
+	_check("los cortes rodean al listón del tier: floja < TIER2 <= sobrada",
+		bajo < liston and liston < alto and margen > 0.0);
+
+	# --- (2) El calentamiento: con número de sobra, callado hasta WARMUP_SECONDS de tramo.
+	var bag = _new_bag();
+	bag.initialize(file_data);
+	var linea = _new_productora("WoodProcessing", "plank", 2);    # techo de 0,5 plank/s
+	gm.setFactories([linea]);
+	var paso = 1.0;
+	var t = 0.0;
+	while t + paso < warmup:
+		t += paso;
+		gm.run_time = t;
+		gm.update(bag);
+	bag.addToBag("plank", int(ceil(t * 0.5 * alto)) + 1);
+	_check("dentro del calentamiento segmentLiveRate() ya tiene número…",
+		gm.segmentLiveRate(bag) >= 0.0, str(gm.segmentLiveRate(bag)));
+	_check("…pero getLiveRate() devuelve -1.0", _near(gm.getLiveRate(bag), -1.0), str(gm.getLiveRate(bag)));
+	_check("y getLineState() está vacío", gm.getLineState(bag) == "", gm.getLineState(bag));
+	var callado = gm.getObjectiveText(bag);
+	_check("y el HUD no pinta la parte «Línea»", not ("Línea" in callado), callado);
+	gm.run_time = warmup;
+	gm.update(bag);
+	_check("a los WARMUP_SECONDS justos getLiveRate() es el parcial del tramo",
+		gm.getLiveRate(bag) >= 0.0 and _near(gm.getLiveRate(bag), gm.segmentLiveRate(bag)),
+		"%s vs %s" % [str(gm.getLiveRate(bag)), str(gm.segmentLiveRate(bag))]);
+	_check("y el estado aparece", gm.getLineState(bag) != "", gm.getLineState(bag));
+
+	# --- (3) Alimentar mejor o peor la cadena mueve el semáforo (relaciones, no cantidades):
+	# se fija el stock del tramo para caer en cada franja sobre la integral que haya.
+	# La integral se lee en cada llamada (no se captura): sigue creciendo mientras corre el tramo.
+	var fijar = func(ratio):
+		var falta = int(ceil(ratio * gm.segment_capacity_area)) - bag.getQuantity("plank");
+		if falta > 0:
+			bag.addToBag("plank", falta);
+		elif falta < 0:
+			bag.removeFromBag("plank", -falta);
+	bag.removeFromBag("plank", bag.getQuantity("plank"));
+	fijar.call(bajo * 0.5);
+	var estado_flojo = gm.getLineState(bag);
+	fijar.call(liston);
+	var estado_ajustado = gm.getLineState(bag);
+	fijar.call(alto * 1.5);
+	var estado_sobrado = gm.getLineState(bag);
+	_check("con poco stock en el tramo la línea está floja", estado_flojo == "floja", estado_flojo);
+	_check("con el stock del listón, ajustada", estado_ajustado == "ajustada", estado_ajustado);
+	_check("y al alimentar mejor la cadena pasa a sobrada", estado_sobrado == "sobrada", estado_sobrado);
+	var t_parado = gm.run_time;
+	while gm.run_time < t_parado + warmup * 4.0:
+		gm.run_time += paso;
+		gm.update(bag);
+	_check("y si la cadena deja de producir, el techo sigue contando y vuelve a caer",
+		gm.getLineState(bag) != "sobrada", "%s (rate %s)" % [gm.getLineState(bag), str(gm.getLiveRate(bag))]);
+
+	# --- (4) El HUD de producción con el semáforo, y la restauración sin él.
+	fijar.call(liston);
+	var pm = _new_pm();
+	pm.addPollution(22607.0, Vector2i(5, 5));
+	var produciendo = gm.getObjectiveText(bag, pm);
+	_check("en producción el HUD dice `…plank   ·   Línea: ajustada` antes de la contaminación",
+		("plank   ·   Línea: ajustada  |  Contaminación: " in produciendo), produciendo);
+	_check("una sola línea y dentro de HUD_MAX_CHARS",
+		produciendo.length() <= presupuesto and not ("\n" in produciendo),
+		"%d de %d: %s" % [produciendo.length(), presupuesto, produciendo]);
+	gm.production_done = true;
+	var restaurando = gm.getObjectiveText(bag, pm);
+	_check("en restauración no hay tramo y no hay «Línea»", not ("Línea" in restaurando)
+		and gm.getLineState(bag) == "", restaurando);
+	_check("y cabe", restaurando.length() <= presupuesto, "%d de %d" % [restaurando.length(), presupuesto]);
+	_limpiar([gm, bag, linea, pm]);
+
+	# --- (5) Punto muerto + rendimiento, en el checkpoint final de la curva real: la línea del
+	# colapso ya iba a ~151 de 155, así que el semáforo es lo que se cae y el aviso queda entero.
+	var centro = Vector2i(5, 5);
+	var pm2 = _new_pm();
+	var esc = _escenario_muerto(file_data, centro, pm2);
+	esc["pm"] = pm2;
+	var gm2 = esc["gm"];
+	var bag2 = esc["bag"];
+	gm2.checkpoints = file_data["Checkpoints"];
+	gm2.current_checkpoint_index = gm2.checkpoints.size() - 1;
+	var ultimo = gm2.checkpoints[gm2.current_checkpoint_index];
+	bag2.addToBag(ultimo["material"], int(ultimo["quantity"]) - 1);
+	for material in ultimo.get("maintenance", {}):
+		bag2.addToBag(material, int(ultimo["maintenance"][material]) - 1);
+	pm2.addPollution(22607.0, centro);
+	var t0 = warmup + 10.0;
+	gm2.run_time = t0;
+	gm2.update(bag2, pm2);
+	gm2.run_time = t0 + 1.0 / 60.0;
+	gm2.update(bag2, pm2);
+	# Sin factorías el techo es 0 y no hay integral: se le da una a mano para que haya estado.
+	gm2.segment_capacity_area = float(int(ultimo["quantity"]));
+	var estado = gm2.getLineState(bag2);
+	var colapso = gm2.getObjectiveText(bag2, pm2);
+	_check("con la ventana abierta y rendimiento que enseñar (%s)" % estado,
+		estado != "" and gm2.deadlock_timer > 0.0, estado);
+	_check("el aviso de colapso sigue entero y delante",
+		colapso.begins_with(gm2._deadlockText()) and ("no queda dónde construir" in colapso), colapso);
+	_check("el semáforo DESAPARECE en vez de desbordar", not ("Línea" in colapso), colapso);
+	_check("y la línea cabe", colapso.length() <= presupuesto,
+		"%d de %d: %s" % [colapso.length(), presupuesto, colapso]);
+	var desbordada = gm2._deadlockText() + gm2._progressText(bag2, pm2, true,
+		gm_script.LINE_STATE_TEXT % estado);
+	_check("porque con él no cabía (el recorte tiene dientes)", desbordada.length() > presupuesto,
+		"%d de %d" % [desbordada.length(), presupuesto]);
+	_check("y lo que se cae es solo el semáforo: el resto es el texto de siempre",
+		colapso == gm2._deadlockText() + gm2._progressText(bag2, pm2, true), colapso);
+
+	# Con el aviso abierto el semáforo NO se pinta aunque quepa (decidido con David el
+	# 2026-09-30): en un checkpoint de etiqueta corta cabrían los dos, y «no se produce…» junto
+	# a «Línea: sobrada» se contradicen.
+	gm2.current_checkpoint_index = 0;
+	var corto = gm2.getObjectiveText(bag2, pm2);
+	var corto_con_linea = gm2._deadlockText() + gm2._progressText(bag2, pm2, true,
+		gm_script.LINE_STATE_TEXT % gm2._lineStateFor(1.0));
+	_check("con el aviso y un checkpoint corto el semáforo cabría…",
+		corto_con_linea.length() <= presupuesto, "%d de %d" % [corto_con_linea.length(), presupuesto]);
+	_check("…y aun así no se pinta: con el aviso abierto el semáforo calla siempre",
+		corto.begins_with(gm2._deadlockText()) and not ("Línea" in corto)
+		and corto.length() <= presupuesto and not ("\n" in corto),
+		"%d de %d: %s" % [corto.length(), presupuesto, corto]);
+
+	# --- (6) Si ni sin el semáforo cabe, se recorta el progreso y nunca el aviso.
+	gm2.checkpoints = [{ "material": "plank", "quantity": 999, "label": "Etiqueta ".repeat(20) }];
+	gm2.current_checkpoint_index = 0;
+	var larga = gm2.getObjectiveText(bag2, pm2);
+	_check("una etiqueta imposible se recorta con «…» a HUD_MAX_CHARS justos",
+		larga.length() == presupuesto and larga.ends_with("…"), "%d: %s" % [larga.length(), larga]);
+	_check("y el aviso de colapso llega entero", larga.begins_with(gm2._deadlockText()), larga);
+	_limpiar([esc["tm"], gm2, bag2, pm2]);
+
+# ---------- Consentimiento M1 (Plan «Builds Públicas con Consentimiento») ----------
+
+# Busca un botón por su texto en todo el subárbol: lo que el jugador ve es el texto, no la variable.
+func _boton_con_texto(nodo, texto):
+	for hijo in nodo.get_children():
+		if hijo is Button and hijo.text == texto:
+			return hijo;
+		var dentro = _boton_con_texto(hijo, texto);
+		if dentro != null:
+			return dentro;
+	return null;
+
+# La pantalla solo emite la decisión —quien llama al SDK es Main—, así que se prueba pulsando sus
+# botones sin encender Augur. El menú enseña «Privacidad» solo con Augur configurado. Y sin
+# `AUGUR_KEY` `_configure_augur()` no configura nada ni deja a Main creyendo que sí.
+func _test_consentimiento_m1():
+	print("Consentimiento M1 — pantalla de primer arranque, «Privacidad» y _configure_augur() sin clave");
+	var augur = root.get_node_or_null("Augur");
+	var screen_script = load("res://ui/consentScreen.gd");
+
+	# --- (1) first_run: cada botón emite su decisión, una vez, y la pantalla se cierra.
+	for caso in [["Aceptar", true], ["No, gracias", false]]:
+		var screen = screen_script.new();
+		screen.initialize(screen_script.MODE_FIRST_RUN);
+		var recibidas = [];
+		screen.decided.connect(func(g): recibidas.append(g));
+		var boton = _boton_con_texto(screen, caso[0]);
+		_check("first_run tiene el botón «%s»" % caso[0], boton != null);
+		if boton == null:
+			screen.free();
+			continue;
+		boton.pressed.emit();
+		_check("«%s» emite decided(%s) una sola vez" % [caso[0], str(caso[1])],
+			recibidas == [caso[1]], str(recibidas));
+		_check("y la pantalla se cierra al decidir", screen.is_queued_for_deletion());
+		_check("first_run no tiene «Volver»: hay que elegir", _boton_con_texto(screen, "Volver") == null);
+	_check("la pantalla no ha tocado Augur (sigue sin configurar ni decisión)",
+		augur != null and not augur._configured and not augur.has_consent_decision());
+
+	# --- (2) Los dos botones pesan lo mismo: nada de patrón oscuro.
+	var igual = screen_script.new();
+	igual.initialize(screen_script.MODE_FIRST_RUN);
+	_check("«Aceptar» y «No, gracias» con el mismo tamaño mínimo y la misma fuente",
+		igual.accept_button.custom_minimum_size == igual.decline_button.custom_minimum_size
+		and igual.accept_button.get_theme_font_size("font_size") == igual.decline_button.get_theme_font_size("font_size"));
+	_check("la pantalla va por encima del menú (layer 25 > 20) y no se congela con pausa",
+		igual.layer == 25 and igual.process_mode == Node.PROCESS_MODE_ALWAYS);
+	igual.free();
+
+	# --- (3) change: «Volver» sale sin decidir.
+	var cambio = screen_script.new();
+	cambio.initialize(screen_script.MODE_CHANGE, true);
+	var decisiones = [];
+	var cerrada = [false];
+	cambio.decided.connect(func(g): decisiones.append(g));
+	cambio.closed.connect(func(): cerrada[0] = true);
+	var volver = _boton_con_texto(cambio, "Volver");
+	_check("change tiene «Volver»", volver != null);
+	if volver != null:
+		volver.pressed.emit();
+		_check("«Volver» cierra sin emitir decided", cerrada[0] and decisiones.is_empty(), str(decisiones));
+	else:
+		cambio.free();
+
+	# --- (4) mainMenu: «Privacidad» solo con Augur configurado.
+	var menu_script = load("res://ui/mainMenu.gd");
+	var sin = menu_script.new();
+	sin.initialize(null, false);
+	_check("mainMenu con augur_enabled = false no tiene «Privacidad»",
+		_boton_con_texto(sin, "Privacidad") == null and sin.privacy_button == null);
+	var con = menu_script.new();
+	con.initialize(null, true);
+	var privacidad = _boton_con_texto(con, "Privacidad");
+	_check("mainMenu con augur_enabled = true tiene «Privacidad»", privacidad != null);
+	if privacidad != null:
+		var avisos = [0];
+		con.privacy_pressed.connect(func(): avisos[0] += 1);
+		privacidad.pressed.emit();
+		_check("«Privacidad» emite privacy_pressed y el menú sigue vivo",
+			avisos[0] == 1 and not con.is_queued_for_deletion(), str(avisos[0]));
+		# Justo debajo de JUGAR: el siguiente hermano en la columna.
+		var jugar = _boton_con_texto(con, "JUGAR");
+		_check("«Privacidad» va justo bajo «JUGAR»",
+			jugar != null and jugar.get_parent() == privacidad.get_parent()
+			and privacidad.get_index() == jugar.get_index() + 1);
+	_limpiar([sin, con]);
+
+	# --- (5) _configure_augur() sin AUGUR_KEY y fuera de template: nada.
+	if OS.get_environment("AUGUR_KEY") == "" and not OS.has_feature("template"):
+		var main = load("res://Main.gd").new();
+		main._configure_augur();
+		_check("_configure_augur() sin AUGUR_KEY no configura Augur ni enciende _augur_enabled",
+			not main._augur_enabled and augur != null and not augur._configured);
+		main.free();
+	else:
+		_check("_configure_augur() sin AUGUR_KEY: la suite corre sin clave", false,
+			"lánzala con `env -u AUGUR_KEY`");
+
+	# --- (6) M2: de dónde sale la clave. Fuera de template un `augur_release.cfg` presente se
+	# IGNORA (desde el editor nunca se manda a prod); en template se lee y el entorno no cuenta.
+	# El `.cfg` de prueba va a `user://` con otro nombre —no a `res://`, que es el repo, ni a
+	# `user://augur/`, que la suite promete no tocar— y se borra al acabar.
+	var cfg_path = "user://test_augur_release.cfg";
+	var cfg = ConfigFile.new();
+	cfg.set_value("augur", "write_key", "clave-de-prueba");
+	cfg.set_value("augur", "endpoint", "https://prueba.invalid");
+	cfg.save(cfg_path);
+	var m2 = load("res://Main.gd").new();
+	var fuera = m2._augur_settings(false, cfg_path);
+	_check("fuera de template el .cfg presente se ignora y manda el entorno",
+		fuera["key"] == OS.get_environment("AUGUR_KEY")
+		and fuera["endpoint"] == OS.get_environment("AUGUR_ENDPOINT")
+		and fuera["key"] != "clave-de-prueba", str(fuera["endpoint"]));
+	var dentro = m2._augur_settings(true, cfg_path);
+	_check("en template se leen write_key y endpoint del .cfg",
+		dentro["key"] == "clave-de-prueba" and dentro["endpoint"] == "https://prueba.invalid",
+		str(dentro["endpoint"]));
+	var sin_cfg = m2._augur_settings(true, "user://no_existe_augur_release.cfg");
+	_check("en template sin .cfg no hay clave (la build no manda nada)", sin_cfg["key"] == "");
+	m2.free();
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(cfg_path));
+	_check("el .cfg de prueba se ha borrado", not FileAccess.file_exists(cfg_path));
+
+# Sin `AUGUR_KEY` el SDK no escribe nada: la suite entera no crea `user://augur/` (ni lo toca si
+# ya existía de una sesión de humo). Va la ÚLTIMA para cubrir todo lo que corrió antes.
+func _test_analitica_m1_sin_clave():
+	print("Analítica M1 — sin AUGUR_KEY la suite no crea ni toca user://augur/");
+	var con_clave = OS.get_environment("AUGUR_KEY") != "";
+	_check("la suite corre sin AUGUR_KEY (lánzala con `env -u AUGUR_KEY`)", not con_clave);
+	var augur = root.get_node_or_null("Augur");
+	_check("y el autoload Augur está cargado y sigue sin configurar",
+		augur != null and not augur._configured);
+	var ahora = _huella_augur();
+	if _augur_huella_inicial == null:
+		_check("user://augur/ no existía y sigue sin existir", ahora == null, str(ahora));
+	else:
+		_check("user://augur/ ya existía (humo) y la suite no lo ha tocado", ahora == _augur_huella_inicial,
+			"antes %s, después %s" % [str(_augur_huella_inicial), str(ahora)]);
+
+# ---------- Legibilidad M4: el tinte de colapso ----------
+
+# Los diamantes de la tercera pasada de draw_tints(), reconocidos por su color: el rojo del
+# colapso no tiene verde y el de la contaminación sí, así que no se confunden.
+func _diamantes_colapso(spy, tm_script):
+	var c = tm_script.COLLAPSE_COLOR;
+	var hallados = [];
+	for p in spy.polys:
+		var col = p["color"];
+		if _near(col.r, c.r) and _near(col.g, c.g) and _near(col.b, c.b):
+			hallados.append(p);
+	return hallados;
+
+# El *Hecho cuando* es visual («la pantalla se tiñe progresivamente… y se corta en seco»); aquí
+# se fijan sus relaciones: 0 cerrado, monótona con run_time dentro de la ventana, 0 en el mismo
+# frame en que un Reforester la cierra, nada sin gameManager, y sin escribir en el gameManager.
+func _test_legibilidad_m4(file_data):
+	print("Legibilidad M4 — el tinte de colapso");
+	var tm_script = load("res://entities/tilemap/tileMap.gd");
+	var gracia = load("res://managers/gameManager.gd").DEADLOCK_GRACE;
+	var tope = tm_script.COLLAPSE_MAX_ALPHA;
+	var centro = Vector2i(5, 5);
+
+	# --- (1) Sin gameManager —como en casi toda la suite— la pasada no existe.
+	var suelto = _tilemap_con_suelo(_vecindario(centro));
+	var spy0 = SpyCanvas.new();
+	suelto.draw_tints(spy0);
+	_check("sin gameManager la intensidad del colapso es 0", suelto.collapseIntensity() == 0.0);
+	_check("y draw_tints() no pinta ni un diamante de colapso",
+		_diamantes_colapso(spy0, tm_script).is_empty(), "polígonos = %d" % spy0.polys.size());
+	_limpiar([suelto]);
+
+	# --- (2) Punto muerto real: sube con run_time y a la gracia entera llega al tope.
+	var pm = _new_pm();
+	root.add_child(pm);   # el Reforester lo localiza con find_child, así que va en el árbol
+	var esc = _escenario_muerto(file_data, centro, pm);
+	esc["pm"] = pm;
+	var gm = esc["gm"];
+	var tm = esc["tm"];
+	tm.setGameManager(gm);
+	_check("el overlay del tinte sigue siendo el TintOverlay a z 1 (la pasada no crea otro)",
+		tm.get_node_or_null("TintOverlay") != null and tm.get_node("TintOverlay").z_index == 1);
+	_check("con la ventana cerrada la intensidad es 0", gm.deadlock_timer == 0.0
+		and tm.collapseIntensity() == 0.0, "timer %f" % gm.deadlock_timer);
+	var spy_cerrada = SpyCanvas.new();
+	tm.draw_tints(spy_cerrada);
+	_check("y no se pinta la pasada, aunque el mapa esté sucio",
+		_diamantes_colapso(spy_cerrada, tm_script).is_empty() and spy_cerrada.polys.size() > 0,
+		"polígonos = %d" % spy_cerrada.polys.size());
+
+	var t0 = 10.0;
+	gm.run_time = t0;
+	gm.update(esc["bag"], pm);
+	_check("la ventana se abre (precondición)", gm.deadlock_timer > 0.0);
+	_check("en el frame en que se abre la intensidad es 0: aún no ha corrido gracia",
+		tm.collapseIntensity() == 0.0, "%f" % tm.collapseIntensity());
+
+	# Solo lectura: mirar la intensidad y pintar no mueve nada del gameManager.
+	gm.run_time = t0 + 1.0;
+	var antes = [gm.deadlock_timer, gm.run_time, gm.last_pending_quantity, gm.last_seen_pollution,
+		gm.active];
+	var i_uno = tm.collapseIntensity();
+	var spy_uno = SpyCanvas.new();
+	tm.draw_tints(spy_uno);
+	var despues = [gm.deadlock_timer, gm.run_time, gm.last_pending_quantity, gm.last_seen_pollution,
+		gm.active];
+	_check("collapseIntensity() y draw_tints() no escriben en el gameManager", antes == despues,
+		"%s → %s" % [str(antes), str(despues)]);
+	_check("la intensidad es lo corrido sobre DEADLOCK_GRACE (se lee la constante)",
+		_near(i_uno, 1.0 / gracia), "%f frente a %f" % [i_uno, 1.0 / gracia]);
+	var colapso_uno = _diamantes_colapso(spy_uno, tm_script);
+	_check("con la ventana abierta se tiñe cada casilla del suelo",
+		colapso_uno.size() == tm.get_used_cells(0).size(),
+		"%d de %d" % [colapso_uno.size(), tm.get_used_cells(0).size()]);
+	_check("con alpha = intensidad × COLLAPSE_MAX_ALPHA",
+		not colapso_uno.is_empty() and _near(colapso_uno[0]["color"].a, i_uno * tope),
+		str(colapso_uno[0]["color"]) if not colapso_uno.is_empty() else "ninguno");
+	_check("y el colapso es la ÚLTIMA pasada: se lee encima de tipo y contaminación",
+		not spy_uno.polys.is_empty() and _diamantes_colapso(
+			{ "polys": [spy_uno.polys[spy_uno.polys.size() - 1]] }, tm_script).size() == 1);
+
+	# Monótona frame a frame durante media gracia, sin saltos hacia atrás.
+	var monotona = true;
+	var previa = -1.0;
+	var t = t0;
+	while t < t0 + gracia * 0.5:
+		t += 1.0 / 60.0;
+		gm.run_time = t;
+		gm.update(esc["bag"], pm);
+		var i = tm.collapseIntensity();
+		if i < previa:
+			monotona = false;
+		previa = i;
+	_check("crece monótona con run_time dentro de la ventana", monotona);
+	_check("a media gracia va por la mitad", _near(previa, 0.5, 0.01), "%f" % previa);
+
+	# --- (3) El corte en seco: el Reforester rompe la condición 2 y, en el MISMO frame en que
+	# la ventana se cierra, la intensidad vuelve a 0 y la pasada desaparece.
+	var reforestador = _factoria_en_arbol("Reforester", centro);
+	reforestador.initialize("Reforester", 1, null, null, 1, -1.0, "restoration", 0);
+	esc["fabricas"].append(reforestador);
+	var cerrada_en_frame = false;
+	var justo_antes = 0.0;
+	var al_cerrar = -1.0;
+	var pasada_al_cerrar = -1;
+	var limite = t + gracia;
+	while t < limite:
+		var i_prev = tm.collapseIntensity();
+		t += 1.0 / 60.0;
+		gm.run_time = t;
+		reforestador.update(esc["bag"]);
+		gm.update(esc["bag"], pm);
+		if gm.deadlock_timer == 0.0:
+			cerrada_en_frame = true;
+			justo_antes = i_prev;
+			al_cerrar = tm.collapseIntensity();
+			var spy_corte = SpyCanvas.new();
+			tm.draw_tints(spy_corte);
+			pasada_al_cerrar = _diamantes_colapso(spy_corte, tm_script).size();
+			break;
+	_check("colocar un Reforester cierra la ventana (precondición)", cerrada_en_frame);
+	_check("el frame anterior al cierre el tinte estaba puesto", justo_antes > 0.0,
+		"%f" % justo_antes);
+	_check("y en el frame del cierre la intensidad es 0, sin rampa de bajada", al_cerrar == 0.0,
+		"%f" % al_cerrar);
+	_check("y draw_tints() ya no pinta la pasada", pasada_al_cerrar == 0,
+		"diamantes de colapso = %d" % pasada_al_cerrar);
+	_limpiar([reforestador, tm, gm, esc["bag"], pm]);
+
+	# --- (4) Con la gracia agotada se queda en el tope, sin pasarse.
+	var pm2 = _new_pm();
+	var esc2 = _escenario_muerto(file_data, centro, pm2);
+	esc2["pm"] = pm2;
+	var gm2 = esc2["gm"];
+	esc2["tm"].setGameManager(gm2);
+	gm2.run_time = t0;
+	gm2.update(esc2["bag"], pm2);
+	_correr_hasta(esc2, t0, t0 + gracia + 2.0);
+	_check("la run se ha perdido por el punto muerto (precondición)", not gm2.active);
+	_check("y el tinte queda al tope: intensidad 1, nunca más",
+		esc2["tm"].collapseIntensity() == 1.0, "%f" % esc2["tm"].collapseIntensity());
+	# Un gameManager ya liberado (la run anterior) no puede reventar el dibujo.
+	var tm2 = esc2["tm"];
+	_limpiar([gm2]);
+	_check("con el gameManager liberado la intensidad vuelve a 0 sin error",
+		tm2.collapseIntensity() == 0.0);
+	_limpiar([tm2, esc2["bag"], pm2]);
+
+# ---------- Clima M1: el manager y el ciclo de vida ----------
+
+# Un weatherManager suelto (sin árbol: su reloj se avanza a mano con advance()) y APAGADO, para
+# que ninguna tirada meta un evento que la prueba no ha pedido. Mapa de 16x10, el de hoy.
+func _new_wm(fd):
+	var wm = load("res://managers/weatherManager.gd").new();
+	wm.name = "WeatherManager";
+	wm.initialize(fd);
+	wm.setMapSize([16, 10]);
+	wm.enabled = false;
+	return wm;
+
+# M1 no aplica efectos: lo que se prueba es que los eventos nacen, viven y MUEREN a su hora, que
+# la probabilidad sube con el pico, que la zona no se sale del mapa, que el plan B 1 suspende el
+# clima con la ventana de punto muerto abierta, que dos eventos solapados se componen y que la
+# suite (los Main que se montan en ella) no recibe eventos por sorpresa.
+func _test_clima_m1(file_data):
+	print("Clima M1 — el manager, el ciclo de vida y el plan B 1");
+	var script_wm = load("res://managers/weatherManager.gd");
+	var mapa = Rect2i(Vector2i.ZERO, Vector2i(16, 10));
+
+	# --- (0) El catálogo está en el JSON con los cuatro tipos y sus campos base.
+	var catalogo = file_data.get("WeatherEvents", {});
+	var ids = catalogo.keys();
+	ids.sort();
+	_check("el JSON trae el catálogo `WeatherEvents` con sequía, lluvia, tormenta y viento",
+		ids == ["drought", "rain", "storm", "wind"], str(ids));
+	var completos = true;
+	for id in ids:
+		var e = catalogo[id];
+		if not (e.has("name") and e.has("duration") and e.has("zone_size") and e.has("color")):
+			completos = false;
+	_check("y cada entrada lleva name, duration, zone_size y color", completos);
+
+	# --- (1) Ciclo de vida: la sequía (duration 30) se retira a los 30 s, ni antes ni después.
+	var wm = _new_wm(file_data);
+	_check("la sequía dura 30 s en el catálogo (precondición)",
+		float(catalogo["drought"]["duration"]) == 30.0);
+	var nacidos = [];
+	var muertos = [];
+	wm.weather_started.connect(func(id, r): nacidos.append([id, r]));
+	wm.weather_ended.connect(func(id): muertos.append(id));
+	var zona = Rect2i(2, 2, 5, 4);
+	wm.startEvent("drought", zona);
+	_check("startEvent() mete el evento en `active` y emite weather_started con su id y su zona",
+		wm.active.size() == 1 and nacidos == [["drought", zona]], str(nacidos));
+	for i in range(29):
+		wm.advance(1.0);
+	_check("a los 29 s sigue vivo y le queda 1 s",
+		wm.active.size() == 1 and _near(wm.active[0].remaining, 1.0) and muertos.is_empty(),
+		"activos %d" % wm.active.size());
+	_check("y mientras vive la consulta ya lo ve (×1,5 dentro, ×1 fuera)",
+		_near(wm.getMultiplierAt(Vector2i(3, 3)), 1.5) and _near(wm.getMultiplierAt(Vector2i(10, 8)), 1.0));
+	wm.advance(1.0);
+	_check("a los 30 s se retira y emite weather_ended",
+		wm.active.is_empty() and muertos == ["drought"], str(muertos));
+	_check("y al retirarse no deja rastro: la consulta vuelve al neutro",
+		_near(wm.getMultiplierAt(Vector2i(3, 3)), 1.0));
+
+	# --- (2) Probabilidad: sube con peak_pollution y se queda en el tope 0,75.
+	var pm = _new_pm();
+	wm.setPollutionManager(pm);
+	var probs = [];
+	for pico in [0.0, 25.0, 50.0, 100.0, 150.0]:
+		pm.peak_pollution = pico;
+		probs.append(wm.rollChance());
+	var crece = true;
+	for i in range(1, probs.size()):
+		if probs[i] <= probs[i - 1]:
+			crece = false;
+	_check("con el mapa limpio la probabilidad es BASE_CHANCE", _near(probs[0], script_wm.BASE_CHANCE),
+		str(probs));
+	_check("la probabilidad sube estrictamente al subir peak_pollution", crece, str(probs));
+	_check("y sigue la fórmula: BASE_CHANCE + PEAK_FACTOR × pico",
+		_near(probs[2], script_wm.BASE_CHANCE + script_wm.PEAK_FACTOR * 50.0), str(probs));
+	pm.peak_pollution = 100000.0;
+	_check("con un pico enorme se queda en el tope 0,75", _near(wm.rollChance(), 0.75),
+		"%f" % wm.rollChance());
+	# Y la relación, tirando de verdad: misma semilla, mismas tiradas, y el mapa sucio se come
+	# más eventos que el limpio.
+	var cuentas = [];
+	for pico in [0.0, 150.0]:
+		var wt = _new_wm(file_data);
+		wt.enabled = true;
+		wt.log_events = false;
+		var pmt = _new_pm();
+		pmt.peak_pollution = pico;
+		wt.setPollutionManager(pmt);
+		wt.setSeed(1234);
+		var n = [0];
+		wt.weather_started.connect(func(_id, _r): n[0] += 1);
+		for i in range(200):
+			wt.advance(script_wm.ROLL_INTERVAL);
+		cuentas.append(n[0]);
+		wt.free();
+		pmt.free();
+	_check("con la misma semilla y 200 tiradas, la run sucia recibe más eventos que la limpia",
+		cuentas[1] > cuentas[0], "limpia %d, sucia %d" % cuentas);
+	# Antes de ROLL_INTERVAL no se tira nunca, aunque la probabilidad esté al tope.
+	var wp = _new_wm(file_data);
+	wp.enabled = true;
+	wp.setPollutionManager(pm);
+	wp.advance(script_wm.ROLL_INTERVAL - 0.5);
+	_check("antes de ROLL_INTERVAL no hay tirada", wp.active.is_empty());
+	wp.free();
+
+	# --- (3) La zona no se sale del mapa: se recorta contra 16x10.
+	var esquina = wm.zoneAround("wind", Vector2i(15, 9));
+	_check("el viento (6x5) centrado en la esquina (15,9) queda dentro del mapa y recortado",
+		mapa.encloses(esquina) and esquina.size.x < 6 and esquina.size.y < 5, str(esquina));
+	var centro = wm.zoneAround("wind", Vector2i(8, 5));
+	_check("y en el centro conserva su 6x5 entero", centro.size == Vector2i(6, 5) and mapa.encloses(centro),
+		str(centro));
+	var fuera = wm.startEvent("storm", Rect2i(-2, -1, 4, 3));
+	_check("startEvent() también recorta una zona que asoma por el borde",
+		fuera != null and fuera.rect == Rect2i(0, 0, 2, 2), str(fuera.rect if fuera else null));
+	_check("y una zona entera fuera del mapa no crea evento",
+		wm.startEvent("storm", Rect2i(30, 30, 4, 3)) == null);
+	var wz = _new_wm(file_data);
+	wz.enabled = true;
+	wz.log_events = false;
+	var pmz = _new_pm();
+	pmz.peak_pollution = 100000.0;
+	wz.setPollutionManager(pmz);
+	wz.setSeed(99);
+	var zonas = [];
+	wz.weather_started.connect(func(_id, r): zonas.append(r));
+	for i in range(100):
+		wz.advance(script_wm.ROLL_INTERVAL);
+	var dentro = true;
+	for r in zonas:
+		if not (mapa.encloses(r) and r.size.x > 0 and r.size.y > 0):
+			dentro = false;
+	_check("las %d zonas que sortean 100 tiradas quedan todas dentro del mapa" % zonas.size(),
+		dentro and zonas.size() > 0);
+	wz.free();
+	pmz.free();
+	wm.active.clear();
+
+	# --- (4) Plan B 1: con la ventana de punto muerto abierta no se tira, los activos no
+	# descuentan y las tres consultas devuelven el neutro.
+	var gm = _new_gm(file_data);
+	var wb = _new_wm(file_data);
+	wb.enabled = true;
+	wb.log_events = false;
+	wb.setPollutionManager(pm);  # pico enorme: la probabilidad está al tope
+	wb.setGameManager(gm);
+	wb.startEvent("drought", Rect2i(0, 0, 5, 4));
+	wb.startEvent("rain", Rect2i(0, 0, 5, 4));
+	wb.startEvent("storm", Rect2i(0, 0, 4, 3));
+	var celda = Vector2i(1, 1);
+	_check("sin ventana abierta las tres consultas ven los eventos (precondición)",
+		not wb.isSuspended() and _near(wb.getMultiplierAt(celda), 1.5)
+		and _near(wb.getPassiveAt(celda), -0.4) and wb.haltsProductionAt(celda));
+	gm.deadlock_timer = 12.0;  # `deadlock_timer` es el run_time en que se abrió; > 0 = abierta
+	var restantes = [];
+	for ev in wb.active:
+		restantes.append(ev.remaining);
+	var reloj = wb._roll_timer;
+	var nacidos_b = [0];
+	wb.weather_started.connect(func(_id, _r): nacidos_b[0] += 1);
+	for i in range(50):
+		wb.advance(script_wm.ROLL_INTERVAL);
+	var intactos = wb.active.size() == 3;
+	for i in range(min(3, wb.active.size())):
+		if wb.active[i].remaining != restantes[i]:
+			intactos = false;
+	_check("con deadlock_timer > 0 el clima está suspendido", wb.isSuspended());
+	_check("y en 1000 s no se tira ni una vez", nacidos_b[0] == 0 and wb._roll_timer == reloj,
+		"nacidos %d" % nacidos_b[0]);
+	_check("y los activos no descuentan tiempo", intactos);
+	_check("y las tres consultas devuelven el neutro (1.0, 0.0, false)",
+		wb.getMultiplierAt(celda) == 1.0 and wb.getPassiveAt(celda) == 0.0
+		and wb.haltsProductionAt(celda) == false);
+	gm.deadlock_timer = 0.0;
+	_check("al cerrarse la ventana vuelven, con el tiempo que les quedaba",
+		not wb.isSuspended() and _near(wb.getMultiplierAt(celda), 1.5) and wb.haltsProductionAt(celda)
+		and wb.active.size() == 3 and wb.active[0].remaining == restantes[0]);
+	# Un gameManager liberado (la run anterior) no puede dejar el clima suspendido ni reventar.
+	gm.free();
+	_check("con el gameManager liberado no revienta y no queda suspendido", not wb.isSuspended());
+	wb.free();
+
+	# --- (5) Solape: el multiplicador multiplica y el pasivo suma; no gana el último.
+	var ws = _new_wm(file_data);
+	ws.startEvent("drought", Rect2i(0, 0, 5, 4));
+	ws.startEvent("drought", Rect2i(2, 2, 5, 4));
+	ws.startEvent("rain", Rect2i(0, 0, 5, 4));
+	ws.startEvent("rain", Rect2i(3, 0, 5, 4));
+	_check("dos sequías solapadas: ×1,5 × ×1,5 = ×2,25 en la intersección",
+		_near(ws.getMultiplierAt(Vector2i(3, 3)), 2.25), "%f" % ws.getMultiplierAt(Vector2i(3, 3)));
+	_check("y ×1,5 donde solo cubre una", _near(ws.getMultiplierAt(Vector2i(0, 0)), 1.5));
+	_check("dos lluvias solapadas suman: −0,4 + −0,4 = −0,8",
+		_near(ws.getPassiveAt(Vector2i(3, 1)), -0.8), "%f" % ws.getPassiveAt(Vector2i(3, 1)));
+	_check("una lluvia no toca el multiplicador ni una sequía el pasivo",
+		_near(ws.getMultiplierAt(Vector2i(7, 0)), 1.0) and _near(ws.getPassiveAt(Vector2i(6, 3)), -0.4));
+	_check("fuera de todas las zonas, neutro", _near(ws.getMultiplierAt(Vector2i(15, 9)), 1.0)
+		and _near(ws.getPassiveAt(Vector2i(15, 9)), 0.0) and not ws.haltsProductionAt(Vector2i(15, 9)));
+	ws.free();
+	wm.free();
+	pm.free();
+
+	# --- (6) Main: _start_game() monta el manager cableado, y la suite no recibe eventos por
+	# sorpresa. Con `weather_enabled = false` antes de arrancar, el clima no tira nunca.
+	var main = _main_para_run();
+	main._start_game("standard");
+	var wr = main.get_node_or_null("WeatherManager");
+	_check("_start_game() crea el nodo WeatherManager como hijo de Main",
+		wr != null and wr == main.weatherManager);
+	_check("inyectado con el pollutionManager y el gameManager de ESTA run",
+		wr != null and wr.pollution_manager == main.pollutionManager and wr.game_manager == main.gameManager);
+	_check("y con el tamaño del mapa elegido", wr != null and wr.map_size == Vector2i(16, 10),
+		str(wr.map_size if wr else null));
+	_check("recién arrancada la run no hay ningún evento ni se ha tirado todavía",
+		wr != null and wr.active.is_empty() and wr._roll_timer > script_wm.ROLL_INTERVAL - 1.0);
+	_limpiar([main.placer, main.mapLoader, main]);
+	var apagado = _main_para_run();
+	apagado.weather_enabled = false;
+	apagado._start_game("standard");
+	var wa = apagado.weatherManager;
+	wa.advance(10000.0);
+	_check("con weather_enabled = false la run no recibe ni un evento en 10000 s",
+		not wa.enabled and wa.active.is_empty());
+	_limpiar([apagado.placer, apagado.mapLoader, apagado]);
+	var fuente = FileAccess.get_file_as_string("res://Main.gd");
+	_check("Main.reset() suelta el WeatherManager con el resto de nodos de la run",
+		fuente.find("\"BeltNetwork\", \"WeatherManager\"]") != -1);
+
+# ---------- Clima M2: sequía y lluvia ----------
+
+# Productora en el árbol con un WoodCutter de verdad en cuanto al tipo, y la emisión fijada a
+# mano (2.0 por tick) para que la aritmética del ×1,5 sea exacta y no dependa del JSON.
+# Si el `pm` ya está en el árbol (segunda productora del mismo escenario) no se vuelve a añadir.
+func _clima_productora(celda, pm):
+	var f;
+	if pm.get_parent() == null:
+		f = _new_factory_en_arbol("WoodCutter", celda, pm);
+	else:
+		f = _new_factory("WoodCutter", celda);
+		root.add_child(f);
+	f.factory_type = "production";
+	f.pollutionAmount = 2.0;
+	return f;
+
+# Lo que ensucia un tick de `f`, medido en su propia casilla.
+func _clima_emision(f, pm):
+	var antes = pm.pollution_per_cell.get(f.cell_position, 0.0);
+	f._apply_pollution(1.0);
+	return pm.pollution_per_cell.get(f.cell_position, 0.0) - antes;
+
+# El WeatherManager como HERMANO de las factorías (hijo de root), que es donde lo busca
+# factoryData._weatherMultiplier(), igual que en el juego cuelgan los dos de Main.
+func _clima_wm_en_arbol(fd):
+	var wm = _new_wm(fd);
+	wm.log_events = false;
+	root.add_child(wm);
+	return wm;
+
+# Las 160 casillas de un mapa 16x10, todas con tile de suelo y sin tipo especial: la lluvia
+# tiene que llegar al suelo NORMAL, que no está en `cell_types`.
+func _clima_mapa_16x10():
+	var celdas = [];
+	for y in range(10):
+		for x in range(16):
+			celdas.append(Vector2i(x, y));
+	return celdas;
+
+# Qué prueba: la sequía multiplica la emisión de una productora solo mientras dura y sin dejar
+# rastro, no toca a una restauradora ni cuando está suspendida; la lluvia limpia casilla a
+# casilla solo su zona (incluido el suelo normal fuera de `cell_types`), por delta; el solape
+# es coherente; y sin manager o sin eventos todo da exactamente lo de antes.
+func _test_clima_m2(file_data):
+	print("Clima M2 — sequía y lluvia");
+	var celda = Vector2i(3, 3);
+	var zona = Rect2i(2, 2, 5, 4);
+
+	# --- (0) Regresión: factoría suelta (sin padre, sin manager) — lo de siempre.
+	var pm = _new_pm();
+	var suelta = _new_factory("WoodCutter", celda);
+	_check("una factoría sin padre no ve clima: multiplicador neutro 1.0",
+		suelta._weatherMultiplier() == 1.0);
+	suelta.free();
+	var f = _clima_productora(celda, pm);
+	var base = _clima_emision(f, pm);
+	_check("sin WeatherManager en el árbol la productora ensucia lo de antes (2.0)", base == 2.0,
+		"%f" % base);
+
+	# --- (1) Sequía sobre un WoodCutter: ×1,5 mientras dura, exactamente lo de antes al acabar.
+	var wm = _clima_wm_en_arbol(file_data);
+	_check("con WeatherManager y sin eventos ensucia exactamente lo mismo",
+		_clima_emision(f, pm) == base);
+	wm.startEvent("drought", zona);
+	var seca = _clima_emision(f, pm);
+	_check("con sequía encima ensucia un 50 % más (3.0)", _near(seca, base * 1.5), "%f" % seca);
+	var lejos = _clima_productora(Vector2i(12, 8), pm);
+	_check("y otra productora fuera de la zona sigue igual",
+		_clima_emision(lejos, pm) == base);
+	for i in range(29):
+		wm.advance(1.0);
+	_check("a los 29 s la sequía sigue multiplicando", _near(_clima_emision(f, pm), base * 1.5));
+	wm.advance(1.0);
+	_check("a los 30 s se retira (precondición)", wm.active.is_empty());
+	var despues = _clima_emision(f, pm);
+	_check("y al terminar la emisión vuelve EXACTAMENTE a la de antes", despues == base,
+		"%f" % despues);
+	_check("sin tocar `pollutionAmount`: no se hornea nada", f.pollutionAmount == 2.0);
+
+	# --- (2) Plan B 1: con la ventana de punto muerto abierta la sequía no multiplica.
+	var gm = _new_gm(file_data);
+	wm.setGameManager(gm);
+	wm.startEvent("drought", zona);
+	gm.deadlock_timer = 12.0;
+	_check("sequía suspendida (deadlock_timer > 0): la emisión es la de antes",
+		_clima_emision(f, pm) == base);
+	gm.deadlock_timer = 0.0;
+	_check("y al cerrarse la ventana vuelve a multiplicar", _near(_clima_emision(f, pm), base * 1.5));
+	wm.setGameManager(null);
+	gm.free();
+	_limpiar([f, lejos, pm]);
+
+	# --- (3) Una restauradora bajo la sequía limpia exactamente lo mismo que sin ella.
+	var limpiezas = [];
+	for con_sequia in [false, true]:
+		var pmr = _new_pm();
+		var centro = Vector2i(4, 4);
+		_ensuciar_area(pmr, centro, 10.0);
+		var r = _new_factory_en_arbol("Reforester", centro, pmr);
+		r.factory_type = "restoration";
+		r.pollutionAmount = -9.0;
+		wm.active.clear();
+		if con_sequia:
+			wm.startEvent("drought", zona);
+		var antes = pmr.total_pollution;
+		r._apply_pollution(1.0);
+		limpiezas.append(antes - pmr.total_pollution);
+		_limpiar([r, pmr]);
+	_check("una restauradora bajo sequía limpia lo mismo que sin ella (9.0)",
+		limpiezas[0] == limpiezas[1] and _near(limpiezas[0], 9.0), str(limpiezas));
+	wm.active.clear();
+
+	# --- (4) Lluvia: limpia su zona casilla a casilla, suelo normal incluido, y nada más.
+	var mapa = _clima_mapa_16x10();
+	var sin_suelo = Vector2i(6, 5);  # dentro de la zona, pero sin tile: no es del mapa
+	var con_suelo = mapa.duplicate();
+	con_suelo.erase(sin_suelo);
+	var tm = _tilemap_con_suelo(con_suelo);
+	tm.cell_types = {};
+	var pml = _new_pm();
+	for c in mapa:
+		pml.addPollution(10.0, c);
+	tm.setWeatherManager(wm);
+	wm.startEvent("rain", zona);
+	var lluvia = float(file_data["WeatherEvents"]["rain"]["passive_pollution_per_tick"]);
+	_check("la lluvia del catálogo limpia (pasivo negativo, precondición)", lluvia < 0.0);
+	var total_antes = pml.total_pollution;
+	tm.tick_passive(pml, 1.0);
+	var dentro_ok = true;
+	var fuera_ok = true;
+	var mojadas = 0;
+	for c in mapa:
+		var v = pml.pollution_per_cell[c];
+		if zona.has_point(c) and c != sin_suelo:
+			mojadas += 1;
+			if not _near(v, 10.0 + lluvia):
+				dentro_ok = false;
+		elif v != 10.0:
+			fuera_ok = false;
+	_check("un segundo de lluvia quita %.1f a cada casilla de suelo de la zona" % -lluvia, dentro_ok);
+	_check("las casillas de la zona son suelo normal: ninguna está en `cell_types`",
+		tm.cell_types.is_empty() and mojadas == 19, "mojadas %d" % mojadas);
+	_check("fuera de la zona no toca ni una casilla", fuera_ok);
+	_check("una casilla de la zona sin tile de suelo no es del mapa y no se toca",
+		pml.pollution_per_cell[sin_suelo] == 10.0);
+	_check("el global baja exactamente lo quitado de las casillas",
+		_near(total_antes - pml.total_pollution, -lluvia * 19), "%f" % (total_antes - pml.total_pollution));
+	# Por delta: 60 frames a 60 fps son un segundo, no sesenta.
+	var pmd = _new_pm();
+	pmd.addPollution(10.0, celda);
+	for i in range(60):
+		tm.tick_passive(pmd, 1.0 / 60.0);
+	_check("escalada por delta: 60 frames a 60 fps == 1 s de lluvia",
+		_near(pmd.pollution_per_cell[celda], 10.0 + lluvia, 0.001), "%f" % pmd.pollution_per_cell[celda]);
+	# Casilla a casilla, no en área: sobre suelo limpio no hay nada que quitar, y la vecina sucia
+	# FUERA de la zona no recibe nada de la casilla del borde.
+	var pmc = _new_pm();
+	pmc.addPollution(10.0, Vector2i(7, 3));   # justo fuera, pegada al borde derecho de la zona
+	tm.tick_passive(pmc, 1.0);
+	_check("casilla a casilla: la vecina sucia fuera de la zona no recibe limpieza",
+		pmc.pollution_per_cell[Vector2i(7, 3)] == 10.0 and pmc.total_pollution == 10.0);
+	# Suspendida por el plan B 1, la lluvia tampoco limpia.
+	var gml = _new_gm(file_data);
+	wm.setGameManager(gml);
+	gml.deadlock_timer = 12.0;
+	var pms = _new_pm();
+	pms.addPollution(10.0, celda);
+	tm.tick_passive(pms, 1.0);
+	_check("lluvia suspendida (deadlock_timer > 0) no limpia", pms.pollution_per_cell[celda] == 10.0);
+	wm.setGameManager(null);
+	gml.free();
+
+	# --- (5) Solape: dos lluvias suman una sola vez por casilla; sequía + lluvia conviven.
+	wm.active.clear();
+	wm.startEvent("rain", Rect2i(2, 2, 3, 3));
+	wm.startEvent("rain", Rect2i(3, 3, 3, 3));
+	var pmo = _new_pm();
+	for c in [Vector2i(2, 2), Vector2i(3, 3), Vector2i(5, 5)]:
+		pmo.addPollution(10.0, c);
+	tm.tick_passive(pmo, 1.0);
+	_check("dos lluvias solapadas: la intersección recibe la suma (2 × %.1f), no el doble de eso" % -lluvia,
+		_near(pmo.pollution_per_cell[Vector2i(3, 3)], 10.0 + 2.0 * lluvia),
+		"%f" % pmo.pollution_per_cell[Vector2i(3, 3)]);
+	_check("y cada zona sola, una lluvia",
+		_near(pmo.pollution_per_cell[Vector2i(2, 2)], 10.0 + lluvia)
+		and _near(pmo.pollution_per_cell[Vector2i(5, 5)], 10.0 + lluvia));
+	wm.active.clear();
+	wm.startEvent("drought", zona);
+	wm.startEvent("rain", zona);
+	var pmx = _new_pm();
+	var fx = _clima_productora(celda, pmx);
+	var emitido = _clima_emision(fx, pmx);
+	tm.tick_passive(pmx, 1.0);
+	_check("sequía + lluvia en la misma casilla: ensucia ×1,5 y la lluvia le quita su parte",
+		_near(emitido, 3.0) and _near(pmx.pollution_per_cell[celda], 3.0 + lluvia),
+		"emitido %f, queda %f" % [emitido, pmx.pollution_per_cell[celda]]);
+	_limpiar([fx, pmx]);
+
+	# --- (6) Regresión de tick_passive: sin manager, con él liberado o sin eventos, lo de antes.
+	# Con un lago en el mapa, para que el bucle de `cell_types` también trabaje.
+	var lago = Vector2i(10, 5);
+	tm.cell_types = { lago: "lake" };
+	tm.tile_type_data = { "lake": { "passive_pollution_per_tick": -0.5 } };
+	var resultados = [];
+	for modo in ["sin_manager", "sin_eventos", "con_lluvia_lejos"]:
+		var pmg = _new_pm();
+		for c in mapa:
+			pmg.addPollution(5.0, c);
+		wm.active.clear();
+		tm.setWeatherManager(null if modo == "sin_manager" else wm);
+		if modo == "con_lluvia_lejos":
+			wm.startEvent("rain", Rect2i(0, 0, 2, 2));  # lejos del lago
+		tm.tick_passive(pmg, 0.5);
+		resultados.append(pmg.pollution_per_cell.duplicate());
+		pmg.free();
+	_check("sin manager y con manager sin eventos, tick_passive da exactamente lo mismo",
+		resultados[0] == resultados[1]);
+	var solo_zona = true;
+	for c in resultados[0]:
+		if Rect2i(0, 0, 2, 2).has_point(c):
+			continue;
+		if resultados[2][c] != resultados[0][c]:
+			solo_zona = false;
+	_check("y con lluvia lejos, el lago y el resto del mapa quedan idénticos", solo_zona);
+	wm.active.clear();
+	wm.startEvent("rain", zona);
+	tm.setWeatherManager(wm);
+	_limpiar([wm]);
+	var pmf = _new_pm();
+	pmf.addPollution(10.0, celda);
+	tm.tick_passive(pmf, 1.0);
+	_check("con el WeatherManager liberado tick_passive no revienta y no llueve",
+		pmf.pollution_per_cell[celda] == 10.0);
+	_limpiar([tm, pml, pmd, pmc, pms, pmo, pmf]);
+
+	# --- (7) Main: el TileMap recibe el manager de ESTA run, y una factoría hija de Main lo ve.
+	var main = _main_para_run();
+	main.weather_enabled = false;
+	main._start_game("standard");
+	var wr = main.weatherManager;
+	wr.log_events = false;
+	_check("_start_game() inyecta el WeatherManager en el TileMap",
+		wr != null and main.get_node("TileMap").weather_manager == wr);
+	var hija = _new_factory("WoodCutter", celda);
+	main.add_child(hija);
+	_check("una factoría hija de Main sin eventos: multiplicador 1.0", hija._weatherMultiplier() == 1.0);
+	wr.startEvent("drought", zona);
+	_check("y con sequía encima lo encuentra como hermano: ×1,5", _near(hija._weatherMultiplier(), 1.5));
+	_limpiar([hija, main.placer, main.mapLoader, main]);
+
+# Factoría INICIALIZADA (con `production`, `tick` e insumos) colgando de root, hermana del
+# WeatherManager de _clima_wm_en_arbol(): update() la recorre entera, que es donde mira M3.
+func _clima_fab(tipo, celda, recibe, material, pollution, ftype = "production", w_needed = 0):
+	var f = load("res://entities/factory/factoryData.gd").new();
+	var spr = AnimatedSprite2D.new();
+	spr.name = "AnimatedSprite2D";
+	spr.sprite_frames = SpriteFrames.new();
+	f.add_child(spr);
+	f.initialize(tipo, 1, recibe, material, 1, pollution, ftype, w_needed);
+	f.cell_position = celda;
+	root.add_child(f);
+	return f;
+
+# Qué prueba: la tormenta para a las productoras de su zona con la razón "storm" —sin emitir,
+# sin ensuciar, sin comerse el insumo y sin acumular deuda—, y vuelven solas al retirarse; la
+# prioridad workers -> storm -> input; las restauradoras y el almacén exentos; el plan B 1
+# también la suspende; y el vocabulario (frase, color, analítica) conoce la sexta razón.
+func _test_clima_m3(file_data):
+	print("Clima M3 — tormenta");
+	var celda = Vector2i(3, 3);
+	var zona = Rect2i(2, 2, 4, 3);
+	var tormenta = file_data["WeatherEvents"]["storm"];
+	_check("la tormenta del catálogo para la producción y dura 15 s (precondición)",
+		bool(tormenta.get("halts_production", false)) and float(tormenta["duration"]) == 15.0);
+
+	# --- (0) Regresión: sin padre / sin manager no para nada.
+	var suelta = _new_factory("WoodCutter", celda);
+	_check("una factoría sin padre no ve tormenta", not suelta._haltedByWeather());
+	suelta.free();
+	var pm = _new_pm();
+	root.add_child(pm);
+	var sin_wm = _clima_fab("WoodCutter", celda, null, "wood", 2.0);
+	sin_wm.update();
+	_check("sin WeatherManager en el árbol la productora produce como siempre",
+		sin_wm.blocked_reason == "" and _near(pm.pollution_per_cell.get(celda, 0.0), 2.0));
+	_limpiar([sin_wm, pm]);
+
+	# --- (1) Una productora con insumo bajo tormenta: parada, sin efectos, y vuelve sola.
+	pm = _new_pm();
+	root.add_child(pm);
+	var wm = _clima_wm_en_arbol(file_data);
+	var sierra = _clima_fab("WoodProcessing", celda, ["wood"], "plank", 2.0);
+	sierra.receiveMaterial("wood", 5);
+	var producidos = [];
+	sierra.resource_produced.connect(func(m, n, _p): producidos.append([m, n]));
+	wm.startEvent("storm", zona);
+	sierra.update();
+	_check("bajo tormenta blocked_reason == 'storm'", sierra.blocked_reason == "storm",
+		"razón '%s'" % sierra.blocked_reason);
+	_check("no emite resource_produced", producidos.is_empty(), str(producidos));
+	_check("no ensucia su casilla", pm.pollution_per_cell.get(celda, 0.0) == 0.0 and pm.total_pollution == 0.0);
+	_check("no se come el insumo", int(sierra.input_buffer["wood"]) == 5);
+	_check("y no acumula production_debt: es una parada, no una rampa",
+		sierra.production_debt == 0.0, "%f" % sierra.production_debt);
+	var fuera = _clima_fab("WoodCutter", Vector2i(12, 8), null, "wood", 2.0);
+	fuera.update();
+	_check("otra productora fuera de la zona produce como siempre", fuera.blocked_reason == "");
+	for i in range(14):
+		wm.advance(1.0);
+		sierra.update();
+	_check("a los 14 s sigue parada por la tormenta", sierra.blocked_reason == "storm"
+		and producidos.is_empty() and int(sierra.input_buffer["wood"]) == 5);
+	wm.advance(1.0);
+	_check("a los 15 s la tormenta se retira (precondición)", wm.active.is_empty());
+	sierra.update();
+	_check("y la factoría vuelve SOLA a producir: razón '', emite 1 plank y come 1 wood",
+		sierra.blocked_reason == "" and producidos == [["plank", 1]] and int(sierra.input_buffer["wood"]) == 4,
+		"razón '%s', %s" % [sierra.blocked_reason, str(producidos)]);
+	_check("ensucia lo de un tick, no lo acumulado durante la parada (2.0)",
+		_near(pm.pollution_per_cell.get(celda, 0.0), 2.0), "%f" % pm.pollution_per_cell.get(celda, 0.0));
+	_check("sin deuda arrastrada", sierra.production_debt == 0.0);
+
+	# --- (2) Prioridad workers -> storm -> input.
+	var prio = _clima_fab("WoodProcessing", Vector2i(4, 3), ["wood"], "plank", 2.0, "production", 1);
+	wm.startEvent("storm", zona);
+	prio.update();
+	_check("sin workers dice 'workers' aunque haya tormenta", prio.blocked_reason == "workers",
+		"razón '%s'" % prio.blocked_reason);
+	prio.workers_assigned = 1;
+	prio.update();
+	_check("con workers, con tormenta y sin insumo dice 'storm' (antes que input)",
+		prio.blocked_reason == "storm", "razón '%s'" % prio.blocked_reason);
+	wm.active.clear();
+	prio.update();
+	_check("sin tormenta, la siguiente es 'input'", prio.blocked_reason == "input");
+
+	# --- (3) Plan B 1: la tormenta suspendida no para nada.
+	var gm = _new_gm(file_data);
+	wm.setGameManager(gm);
+	wm.startEvent("storm", zona);
+	gm.deadlock_timer = 12.0;
+	var libre = _clima_fab("WoodCutter", Vector2i(5, 4), null, "wood", 2.0);
+	libre.update();
+	_check("tormenta suspendida (deadlock_timer > 0): produce como siempre", libre.blocked_reason == "");
+	gm.deadlock_timer = 0.0;
+	libre.update();
+	_check("y al cerrarse la ventana vuelve a pararla", libre.blocked_reason == "storm");
+	wm.setGameManager(null);
+	gm.free();
+	_limpiar([sierra, fuera, prio, libre, pm]);
+
+	# --- (4) Restauradoras exentas: limpian bajo tormenta exactamente lo mismo que sin ella.
+	var tipos = [["Reforester", null, -4.0, 0], ["WaterTreatment", ["stone"], -7.0, 1]];
+	for t in tipos:
+		var limpiezas = [];
+		for con_tormenta in [false, true]:
+			var pmr = _new_pm();
+			root.add_child(pmr);
+			_ensuciar_area(pmr, celda, 10.0);
+			var r = _clima_fab(t[0], celda, t[1], null, t[2], "restoration", t[3]);
+			r.workers_assigned = t[3];
+			if t[1] != null:
+				r.receiveMaterial("stone", 3);
+			wm.active.clear();
+			if con_tormenta:
+				wm.startEvent("storm", zona);
+			var antes = pmr.total_pollution;
+			r.update();
+			limpiezas.append([antes - pmr.total_pollution, r.blocked_reason,
+				int(r.input_buffer.get("stone", 0))]);
+			_limpiar([r, pmr]);
+		_check("%s bajo tormenta sigue limpiando lo mismo, sin razón de parada" % t[0],
+			limpiezas[0] == limpiezas[1] and limpiezas[1][0] > 0.0 and limpiezas[1][1] == "",
+			str(limpiezas));
+	wm.active.clear();
+
+	# --- (5) El almacén no se toca: vuelca en la bolsa lo que le traen, con tormenta o sin ella.
+	var bag = _new_bag();
+	var almacen = _clima_fab("Storage", celda, null, null, 0.0, "storage");
+	almacen.receiveMaterial("wood", 3);
+	wm.startEvent("storm", zona);
+	almacen.update(bag);
+	_check("el almacén bajo tormenta vuelca en la bolsa y no dice 'storm'",
+		almacen.blocked_reason == "" and int(bag.getQuantity("wood")) == 3 and almacen.input_buffer.is_empty(),
+		"razón '%s', wood %d" % [almacen.blocked_reason, int(bag.getQuantity("wood"))]);
+	_limpiar([almacen, wm]);
+	if is_instance_valid(bag) and bag is Node:
+		bag.free();
+
+	# --- (6) Vocabulario: frase y color propios, distintos de las otras cuatro.
+	var blocked = load("res://ui/blockedReason.gd");
+	var script_tm = load("res://entities/tilemap/tileMap.gd");
+	var frase = blocked.text_for("storm");
+	_check("blockedReason tiene frase para 'storm'", frase != "" and frase.find("null") < 0, frase);
+	var color = blocked.color_for("storm");
+	var repetido = false;
+	for k in ["workers", "input", "output", "choke"]:
+		if script_tm.STATUS_COLORS[k] == color:
+			repetido = true;
+	_check("y su color es el de STATUS_COLORS y no repite ninguno de los otros",
+		script_tm.STATUS_COLORS.has("storm") and color == script_tm.STATUS_COLORS["storm"] and not repetido,
+		str(color));
+
+	# --- (7) Main: la analítica acepta la razón nueva y la cuenta en run_sample.
+	var main = _main_para_run();
+	main.weather_enabled = false;
+	var recibidos = [];
+	main.analytics.sink = func(n, p): recibidos.append([n, p]);
+	main._start_game("standard");
+	var wr = main.weatherManager;
+	wr.log_events = false;
+	var a = main.analytics;
+	_check("el enum `blocked` del catálogo incluye 'storm'", a.enums["blocked"].has("storm"),
+		str(a.enums["blocked"]));
+	_check("y run_sample declara blocked_storm", a.events["run_sample"]["props"].has("blocked_storm"));
+	var hija = _factoria_en_main(main, "WoodCutter", Vector2i(3, 3), 1, null, "wood");
+	wr.startEvent("storm", zona);
+	hija.update();
+	_check("una factoría hija de Main encuentra la tormenta como hermana: 'storm'",
+		hija.blocked_reason == "storm", "razón '%s'" % hija.blocked_reason);
+	recibidos.clear();
+	main._show_factory_panel(hija);
+	var po = _filas_de(recibidos, "panel_opened");
+	_check("panel_opened con blocked 'storm' pasa el validador y se manda",
+		po.size() == 1 and po[0]["blocked"] == "storm", str(recibidos));
+	var panel = main.get_node_or_null("FactoryPanel");
+	if panel != null:
+		main.remove_child(panel);
+		panel.free();
+	recibidos.clear();
+	var muestra = a.build_sample();
+	_check("run_sample cuenta la parada en blocked_storm",
+		muestra.get("blocked_storm", -1) >= 1 and typeof(muestra.get("blocked_storm")) == TYPE_INT, str(muestra.get("blocked_storm")));
+	_check("y la muestra con blocked_storm pasa el validador del catálogo",
+		a.track("run_sample", muestra) and _nombres_de(recibidos) == ["run_sample"], str(recibidos));
+	_liberar_main(main);
+
+# ---------- Clima en la analítica (2026-10-01) ----------
+
+# Hasta el 2026-10-01 el clima solo llegaba a Augur como `blocked_storm`: sin evento de inicio ni de
+# fin no se sabía qué clima salió, dónde ni cuánto duró. Aquí se afirma el cableado de Main a la
+# analítica y que todo pasa el validador del catálogo (un prop que no casara tumbaría el evento).
+func _test_clima_analitica(file_data):
+	print("Clima en la analítica — weather_started, weather_ended y weather_active en run_sample");
+	var main = _main_para_run();
+	main.weather_enabled = false;
+	var recibidos = [];
+	main.analytics.sink = func(n, p): recibidos.append([n, p]);
+	main._start_game("standard");
+	var wm = main.weatherManager;
+	wm.log_events = false;
+	var a = main.analytics;
+	var ids = file_data.get("WeatherEvents", {}).keys();
+	ids.sort();
+	var enum_ids = a.enums.get("weather", []).duplicate();
+	enum_ids.sort();
+	_check("el enum `weather` del catálogo son exactamente los climas de WeatherEvents",
+		enum_ids == ids and ids.size() > 0, "%s vs %s" % [str(enum_ids), str(ids)]);
+
+	# --- Inicio: zona recortada, duración del JSON, probabilidad y activos contando este.
+	recibidos.clear();
+	var ev = wm.startEvent("drought", Rect2i(-2, -1, 5, 4));
+	var ws = _filas_de(recibidos, "weather_started");
+	_check("startEvent() manda un weather_started que pasa el validador",
+		ev != null and ws.size() == 1, str(recibidos));
+	if ws.size() == 1:
+		var f = ws[0];
+		_check("con el clima, la zona YA recortada al mapa y la duración del catálogo",
+			f["weather"] == "drought" and f["x"] == ev.rect.position.x and f["y"] == ev.rect.position.y
+				and f["w"] == ev.rect.size.x and f["h"] == ev.rect.size.y and f["w"] < 5
+				and is_equal_approx(f["duration"], float(file_data["WeatherEvents"]["drought"]["duration"])),
+			str(f));
+		_check("la probabilidad de la tirada y n_active = 1",
+			is_equal_approx(f["chance"], wm.rollChance()) and f["n_active"] == 1, str(f));
+	var ev2 = wm.startEvent("rain", Rect2i(8, 4, 5, 4));
+	ws = _filas_de(recibidos, "weather_started");
+	_check("un segundo clima solapado cuenta n_active = 2",
+		ev2 != null and ws.size() == 2 and ws[1]["n_active"] == 2, str(ws));
+
+	# --- run_sample: los dos vivos.
+	recibidos.clear();
+	var muestra = a.build_sample();
+	_check("run_sample lleva weather_active = 2, int",
+		muestra.get("weather_active", -1) == 2 and typeof(muestra.get("weather_active")) == TYPE_INT,
+		str(muestra.get("weather_active")));
+	_check("y la muestra pasa el validador",
+		a.track("run_sample", muestra) and _nombres_de(recibidos) == ["run_sample"], str(recibidos));
+
+	# --- Fin: la sequía se agota antes; al acabar queda uno vivo.
+	recibidos.clear();
+	ev.remaining = 0.5;
+	ev2.remaining = 100.0;
+	wm.advance(1.0);
+	var we = _filas_de(recibidos, "weather_ended");
+	_check("agotar la sequía manda weather_ended con n_active = 1 (los vivos, no el array viejo)",
+		we.size() == 1 and we[0]["weather"] == "drought" and we[0]["n_active"] == 1, str(recibidos));
+	_check("y el HUD sigue recibiendo su aviso de fin, como antes",
+		main.gameManager._weather_end_id == "drought", main.gameManager._weather_end_id);
+
+	# --- Sin run viva no se manda nada (track() lo rechazaría con un aviso).
+	main._end_run("abandon");
+	recibidos.clear();
+	wm.startEvent("storm", Rect2i(0, 0, 3, 3));
+	_check("sin run viva el clima no manda nada", _filas_de(recibidos, "weather_started").is_empty(),
+		str(recibidos));
+	_liberar_main(main);
+
+# ---------- Clima M4: viento ----------
+
+# Un segundo de contagio en pasos de 1/60, como en _test_cd2_contagio.
+func _clima_contagio_1s(tm, pm):
+	for i in range(60):
+		tm.tick_contagion(pm, 1.0 / 60.0);
+
+# Qué recibe cada una de las 8 vecinas de `foco`.
+func _clima_vecinas(pm, foco):
+	var r = {};
+	for offset in pm.NEIGHBOR_OFFSETS:
+		r[offset] = pm.pollution_per_cell.get(foco + offset, 0.0);
+	return r;
+
+# Un foco saturado (13 > 12,5) en `foco`, un segundo de contagio, y el pm resultante.
+func _clima_foco_1s(tm, foco):
+	var pm = _new_pm();
+	pm.addPollution(13.0, foco);
+	_clima_contagio_1s(tm, pm);
+	return pm;
+
+# Qué prueba: con viento el contagio de un foco de su zona va ENTERO a la vecina de sotavento
+# (8×amount, el total añadido idéntico al de sin viento); fuera de la zona, con sotavento
+# fuera del mapa, con el viento retirado o suspendido (plan B 1), y con el TileMap suelto,
+# el contagio es el de siempre a las 8; y con dos vientos solapados manda el más antiguo.
+func _test_clima_m4(file_data):
+	print("Clima M4 — viento");
+	var viento = file_data["WeatherEvents"]["wind"];
+	_check("el viento del catálogo sopla hacia [1, 0] y dura 20 s (precondición)",
+		int(viento["contagion_direction"][0]) == 1 and int(viento["contagion_direction"][1]) == 0
+		and float(viento["duration"]) == 20.0);
+	var foco = Vector2i(5, 5);
+	var este = Vector2i(1, 0);
+	var tm = _tilemap_con_suelo(_clima_mapa_16x10());
+
+	# --- (0) Regresión: TileMap suelto, sin WeatherManager inyectado — lo de siempre.
+	_check("sin WeatherManager la dirección del viento es ZERO", tm._windAt(foco) == Vector2i.ZERO);
+	var pm0 = _clima_foco_1s(tm, foco);
+	var esperado = pm0.contagion_rate * 1.0;
+	var vec0 = _clima_vecinas(pm0, foco);
+	var ocho = true;
+	for offset in vec0:
+		if not _near(vec0[offset], esperado, 0.001):
+			ocho = false;
+	_check("sin WeatherManager el foco contagia a sus 8 vecinas", ocho, str(vec0));
+	var total_sin_viento = pm0.total_pollution;
+	_check("y el global sube 8×amount (precondición de la conservación)",
+		_near(total_sin_viento, 13.0 + 8.0 * esperado, 0.001), "%f" % total_sin_viento);
+
+	# --- (1) Viento [1,0] sobre el foco: todo a sotavento, total idéntico.
+	var wm = _new_wm(file_data);
+	wm.log_events = false;
+	tm.setWeatherManager(wm);
+	wm.startEvent("wind", Rect2i(2, 2, 6, 5));
+	_check("dentro de la zona la dirección es [1, 0]", wm.getContagionDirectionAt(foco) == este);
+	var pm1 = _clima_foco_1s(tm, foco);
+	var vec1 = _clima_vecinas(pm1, foco);
+	var solo_sotavento = true;
+	for offset in vec1:
+		if offset != este and vec1[offset] != 0.0:
+			solo_sotavento = false;
+	_check("con viento solo la vecina de sotavento recibe contagio", solo_sotavento, str(vec1));
+	_check("y recibe 8×amount", _near(vec1[este], 8.0 * esperado, 0.001),
+		"%f, esperado %f" % [vec1[este], 8.0 * esperado]);
+	_check("el total añadido es idéntico al de sin viento (se conserva, solo cambia la dirección)",
+		_near(pm1.total_pollution, total_sin_viento, 0.001),
+		"%f contra %f" % [pm1.total_pollution, total_sin_viento]);
+	_check("y peak_pollution sube lo mismo", _near(pm1.peak_pollution, pm0.peak_pollution, 0.001));
+	_check("el foco no pierde nada", _near(pm1.pollution_per_cell[foco], 13.0));
+
+	# --- (2) Foco fuera de la zona: contagia a las 8 aunque sople viento en otro sitio.
+	var lejos = Vector2i(12, 2);
+	var pm2 = _clima_foco_1s(tm, lejos);
+	var vec2 = _clima_vecinas(pm2, lejos);
+	var ocho2 = true;
+	for offset in vec2:
+		if not _near(vec2[offset], esperado, 0.001):
+			ocho2 = false;
+	_check("un foco fuera de la zona de viento contagia a las 8 como siempre", ocho2, str(vec2));
+
+	# --- (3) Foco en la zona con sotavento fuera del mapa: contagio normal (5 vecinas en el borde).
+	var borde = Vector2i(15, 5);
+	wm.active.clear();
+	wm.startEvent("wind", Rect2i(12, 3, 6, 5));
+	_check("el foco del borde está en la zona (precondición)",
+		wm.getContagionDirectionAt(borde) == este and tm.get_cell_source_id(0, borde + este) == -1);
+	var pm3 = _clima_foco_1s(tm, borde);
+	var vec3 = _clima_vecinas(pm3, borde);
+	var normal3 = true;
+	for offset in vec3:
+		var existe = tm.get_cell_source_id(0, borde + offset) != -1;
+		if not _near(vec3[offset], esperado if existe else 0.0, 0.001):
+			normal3 = false;
+	_check("con sotavento fuera del mapa el foco contagia como siempre a las que existen", normal3,
+		str(vec3));
+	_check("ni se pierde ni se sale: el global sube 5×amount",
+		_near(pm3.total_pollution, 13.0 + 5.0 * esperado, 0.001) and not pm3.pollution_per_cell.has(borde + este),
+		"%f" % pm3.total_pollution);
+
+	# --- (4) El viento se retira a los 20 s y el contagio vuelve a las 8.
+	wm.active.clear();
+	wm.startEvent("wind", Rect2i(2, 2, 6, 5));
+	wm.advance(19.0);
+	var pm4a = _clima_foco_1s(tm, foco);
+	_check("a los 19 s aún sopla", _near(pm4a.pollution_per_cell.get(foco + este, 0.0), 8.0 * esperado, 0.001));
+	wm.advance(1.0);
+	_check("a los 20 s el viento se retira (precondición)", wm.active.is_empty());
+	var pm4 = _clima_foco_1s(tm, foco);
+	var vec4 = _clima_vecinas(pm4, foco);
+	var ocho4 = true;
+	for offset in vec4:
+		if not _near(vec4[offset], esperado, 0.001):
+			ocho4 = false;
+	_check("al retirarse el viento el contagio vuelve a las 8 vecinas", ocho4, str(vec4));
+
+	# --- (5) Plan B 1: viento suspendido no desvía; al cerrarse la ventana vuelve a desviar.
+	var gm = _new_gm(file_data);
+	wm.setGameManager(gm);
+	wm.startEvent("wind", Rect2i(2, 2, 6, 5));
+	gm.deadlock_timer = 12.0;
+	_check("suspendido, la dirección es ZERO", wm.getContagionDirectionAt(foco) == Vector2i.ZERO);
+	var pm5 = _clima_foco_1s(tm, foco);
+	var vec5 = _clima_vecinas(pm5, foco);
+	var ocho5 = true;
+	for offset in vec5:
+		if not _near(vec5[offset], esperado, 0.001):
+			ocho5 = false;
+	_check("viento suspendido (deadlock_timer > 0): contagio a las 8 como siempre", ocho5, str(vec5));
+	gm.deadlock_timer = 0.0;
+	var pm5b = _clima_foco_1s(tm, foco);
+	_check("y al cerrarse la ventana vuelve a desviar",
+		_near(pm5b.pollution_per_cell.get(foco + este, 0.0), 8.0 * esperado, 0.001)
+		and pm5b.pollution_per_cell.get(foco + Vector2i(-1, 0), 0.0) == 0.0);
+	wm.setGameManager(null);
+	gm.free();
+
+	# --- (6) Solape: manda el PRIMER evento activo con viento que cubra la celda. Un viento
+	# de oeste se añade al catálogo de ESTE manager (copia, no el file_data compartido).
+	wm.active.clear();
+	wm.catalog = wm.catalog.duplicate(true);
+	wm.catalog["wind_west"] = {"name": "Viento de poniente", "duration": 20.0, "zone_size": [6, 5],
+		"contagion_direction": [-1, 0]};
+	var oeste = Vector2i(-1, 0);
+	wm.startEvent("wind", Rect2i(2, 2, 6, 5));
+	wm.startEvent("wind_west", Rect2i(3, 3, 6, 5));
+	_check("solape: con el de levante primero, sopla a levante",
+		wm.getContagionDirectionAt(foco) == este);
+	var pm6 = _clima_foco_1s(tm, foco);
+	_check("y todo el contagio va a levante, nada a poniente",
+		_near(pm6.pollution_per_cell.get(foco + este, 0.0), 8.0 * esperado, 0.001)
+		and pm6.pollution_per_cell.get(foco + oeste, 0.0) == 0.0);
+	wm.active.clear();
+	wm.startEvent("wind_west", Rect2i(3, 3, 6, 5));
+	wm.startEvent("wind", Rect2i(2, 2, 6, 5));
+	var pm7 = _clima_foco_1s(tm, foco);
+	_check("con el de poniente primero, todo a poniente (no se suman ni se anulan)",
+		_near(pm7.pollution_per_cell.get(foco + oeste, 0.0), 8.0 * esperado, 0.001)
+		and pm7.pollution_per_cell.get(foco + este, 0.0) == 0.0);
+	# Un evento sin viento que cubra la celda antes no tapa al que sí lo trae.
+	wm.active.clear();
+	wm.startEvent("rain", Rect2i(2, 2, 6, 5));
+	wm.startEvent("wind", Rect2i(2, 2, 6, 5));
+	_check("una lluvia más antigua sobre la celda no tapa al viento",
+		wm.getContagionDirectionAt(foco) == este);
+
+	# --- (7) Solo cambia la dirección: las constantes de la derrota no se han movido.
+	_check("contagion_rate sigue en 0,12 (provisional, no se toca en M4)", _near(pm0.contagion_rate, 0.12));
+	_check("contagion_pollution sigue en 12,5", _near(pm0.contagion_pollution, 12.5));
+
+	tm.setWeatherManager(null);
+	_limpiar([tm, wm, pm0, pm1, pm2, pm3, pm4a, pm4, pm5, pm5b, pm6, pm7]);
+
+# ---------- Clima M5: aviso y tintado ----------
+
+# Los polígonos de `spy` pintados con el color de un evento del catálogo (alpha incluido: el
+# relleno de la zona usa el del JSON tal cual). Ningún otro tinte comparte esos colores.
+func _clima_polys_de(spy, catalogo, id):
+	var col = catalogo[id]["color"];
+	var hallados = [];
+	for i in spy.polys.size():
+		var c = spy.polys[i]["color"];
+		if _near(c.r, float(col[0])) and _near(c.g, float(col[1])) and _near(c.b, float(col[2])) \
+				and _near(c.a, float(col[3])):
+			hallados.append(i);
+	return hallados;
+
+# Qué prueba: el HUD nombra el evento vivo y su tiempo, y anuncia el fin un rato; con la
+# ventana de punto muerto abierta no sale el clima; la prioridad deadlock > progreso > clima >
+# línea y ninguna combinación pasa de HUD_MAX_CHARS; el texto es solo lectura; la pasada de
+# draw_tints() pinta la zona (y su contorno) mientras dura y deja de pintarla al retirarse, va
+# después de la contaminación y antes del colapso, no pinta suspendida, y los overlays siguen
+# siendo los de siempre. El veredicto visual es de tools/ver_clima.gd.
+func _test_clima_m5(file_data):
+	print("Clima M5 — aviso en el HUD y tinte de la zona");
+	var gm_script = load("res://managers/gameManager.gd");
+	var presupuesto = gm_script.HUD_MAX_CHARS;
+	var catalogo = file_data["WeatherEvents"];
+	var zona = Rect2i(2, 2, 4, 3);
+
+	# --- (1) El aviso: nombre del catálogo y segundos, delante del progreso.
+	var gm = _new_gm(file_data, [{ "material": "plank", "quantity": 20, "label": "Checkpoint 1/5" }]);
+	var bag = _new_bag();
+	bag.initialize(file_data);
+	var sin_clima = gm.getObjectiveText(bag);
+	var wm = _new_wm(file_data);
+	wm.log_events = false;
+	gm.setWeatherManager(wm);
+	wm.weather_ended.connect(gm._on_weather_ended);
+	_check("con el manager inyectado y sin eventos el HUD es el de antes",
+		gm.getObjectiveText(bag) == sin_clima, gm.getObjectiveText(bag));
+	wm.startEvent("storm", zona);
+	var con_tormenta = gm.getObjectiveText(bag);
+	_check("con una tormenta viva el HUD la nombra con sus segundos, delante",
+		con_tormenta.begins_with("%s 15 s" % catalogo["storm"]["name"]), con_tormenta);
+	_check("y el progreso sigue entero detrás", con_tormenta.ends_with(sin_clima), con_tormenta);
+	wm.advance(3.2);
+	_check("los segundos bajan con el reloj del manager (hacia arriba: 11,8 → 12)",
+		gm.getObjectiveText(bag).begins_with("%s 12 s" % catalogo["storm"]["name"]), gm.getObjectiveText(bag));
+	wm.startEvent("drought", zona);
+	var dos = gm.getObjectiveText(bag);
+	_check("con dos eventos salen los dos, en orden de nacimiento",
+		dos.begins_with("%s 12 s%s%s 30 s" % [catalogo["storm"]["name"], gm_script.WEATHER_SEPARATOR,
+			catalogo["drought"]["name"]]), dos);
+	_check("una sola línea", not ("\n" in dos));
+
+	# Solo lectura: mirar el HUD no mueve ni el manager ni el gameManager.
+	var antes = [wm.active.size(), wm.active[0].remaining, gm.run_time, gm._weather_end_id, gm.active];
+	for i in 5:
+		gm.getObjectiveText(bag);
+	_check("getObjectiveText() no toca el clima ni el gameManager",
+		antes == [wm.active.size(), wm.active[0].remaining, gm.run_time, gm._weather_end_id, gm.active]);
+
+	# --- (2) El fin: la señal lo anota y el HUD lo enseña WEATHER_END_NOTICE_SECS.
+	gm.run_time = 50.0;
+	wm.advance(12.0);   # la tormenta (11,8 s) termina; la sequía sigue
+	var fin = gm.getObjectiveText(bag);
+	_check("al terminar la tormenta el HUD ya no la cuenta, pero anuncia su fin",
+		not ("%s 1" % catalogo["storm"]["name"] in fin) and ("%s: fin" % catalogo["storm"]["name"] in fin), fin);
+	_check("y la sequía sigue ahí", fin.begins_with(catalogo["drought"]["name"]), fin);
+	gm.run_time = 50.0 + gm_script.WEATHER_END_NOTICE_SECS + 0.1;
+	_check("pasados WEATHER_END_NOTICE_SECS el aviso de fin se va",
+		not (": fin" in gm.getObjectiveText(bag)), gm.getObjectiveText(bag));
+	wm.active.clear();
+	_check("sin eventos y sin fin reciente, el HUD vuelve a ser el de antes",
+		gm.getObjectiveText(bag) == sin_clima, gm.getObjectiveText(bag));
+	gm.run_time = 60.0;
+	gm._on_weather_ended("rain");
+	wm.startEvent("rain", zona);
+	var vuelve = gm.getObjectiveText(bag);
+	_check("si el mismo evento vuelve a empezar, no se anuncia a la vez su fin",
+		not (": fin" in vuelve) and vuelve.begins_with(catalogo["rain"]["name"]), vuelve);
+	wm.active.clear();
+	gm._weather_end_id = "";
+
+	# --- (3) Prioridad y presupuesto, en el checkpoint final de la curva real con la cola de
+	# contaminación y el semáforo: la peor línea que el juego sabe producir, más los cuatro
+	# eventos a la vez y un fin reciente.
+	var gm3 = _new_gm(file_data);
+	gm3.setWeatherManager(wm);
+	gm3.current_checkpoint_index = gm3.checkpoints.size() - 1;
+	var ultimo = gm3.checkpoints[gm3.current_checkpoint_index];
+	var bag3 = _new_bag();
+	bag3.initialize(file_data);
+	bag3.addToBag(ultimo["material"], int(ultimo["quantity"]) - 1);
+	var pm3 = _new_pm();
+	pm3.addPollution(22607.0, Vector2i(5, 5));
+	gm3.segment_capacity_area = float(int(ultimo["quantity"]));
+	gm3.run_time = gm_script.WARMUP_SECONDS + 10.0;
+	gm3.last_checkpoint_time = 0.0;
+	var ids = catalogo.keys();
+	ids.sort();
+	for id in ids:
+		wm.startEvent(id, zona);
+	gm3._weather_end_id = "wind";
+	gm3._weather_end_at = gm3.run_time;
+	var estado = gm3.getLineState(bag3);
+	var progreso = gm3._progressText(bag3, pm3, false);
+	var todo = gm3.getObjectiveText(bag3, pm3);
+	_check("hay semáforo que enseñar (precondición)", estado != "", estado);
+	_check("los cuatro eventos + fin + progreso + línea: una línea dentro de HUD_MAX_CHARS",
+		todo.length() <= presupuesto and not ("\n" in todo), "%d de %d: %s" % [todo.length(), presupuesto, todo]);
+	_check("el progreso del checkpoint llega ENTERO (no se sacrifica por el clima)",
+		todo.ends_with(progreso) or todo.ends_with(gm3._progressText(bag3, pm3, false,
+			gm_script.LINE_STATE_TEXT % estado)), todo);
+	_check("y el semáforo cede ante el clima: con clima y sin sitio, fuera la línea",
+		not ("Línea" in todo) and todo.begins_with(catalogo[ids[0]]["name"]), todo);
+	# Con un solo evento y una etiqueta corta caben todos, línea incluida.
+	wm.active.clear();
+	wm.startEvent("storm", zona);
+	gm3.checkpoints = [{ "material": "plank", "quantity": 99, "label": "Checkpoint 2/5" }];
+	gm3.current_checkpoint_index = 0;
+	gm3._weather_end_id = "";
+	var holgado = gm3.getObjectiveText(bag3, pm3);
+	_check("con sitio de sobra salen clima, progreso y línea",
+		holgado.begins_with(catalogo["storm"]["name"]) and ("Línea" in holgado)
+		and holgado.length() <= presupuesto, holgado);
+	# Si ni el clima con el progreso cabe, se cae el clima y el progreso se queda.
+	gm3.checkpoints = [{ "material": "plank", "quantity": 99, "label": "Etiqueta ".repeat(15) }];
+	var apretado = gm3.getObjectiveText(bag3, pm3);
+	_check("con un progreso que ya llena la línea, el clima se cae y el progreso manda",
+		not (catalogo["storm"]["name"] in apretado) and apretado.length() <= presupuesto
+		and apretado.begins_with("Etiqueta"), "%d: %s" % [apretado.length(), apretado]);
+	wm.active.clear();
+
+	# --- (4) Punto muerto abierto: el clima ni se anuncia ni se tiñe (plan B 1).
+	var centro = Vector2i(5, 5);
+	var pm4 = _new_pm();
+	var esc = _escenario_muerto(file_data, centro, pm4);
+	esc["pm"] = pm4;
+	var gm4 = esc["gm"];
+	var tm4 = esc["tm"];
+	tm4.setGameManager(gm4);
+	var wm4 = _new_wm(file_data);
+	wm4.log_events = false;
+	wm4.setGameManager(gm4);
+	gm4.setWeatherManager(wm4);
+	tm4.setWeatherManager(wm4);
+	wm4.startEvent("drought", Rect2i(4, 4, 3, 3));
+	var spy_abierto = SpyCanvas.new();
+	tm4.draw_tints(spy_abierto);
+	_check("con la ventana cerrada la sequía se tiñe (precondición)",
+		_clima_polys_de(spy_abierto, catalogo, "drought").size() == 9 and spy_abierto.lines.size() > 0,
+		"%d polígonos, %d líneas" % [_clima_polys_de(spy_abierto, catalogo, "drought").size(), spy_abierto.lines.size()]);
+	gm4.run_time = 10.0;
+	gm4.update(esc["bag"], pm4);
+	gm4.run_time = 11.0;
+	_check("la ventana se abre (precondición)", gm4.deadlock_timer > 0.0 and wm4.isSuspended());
+	var colapso = gm4.getObjectiveText(esc["bag"], pm4);
+	_check("con la ventana abierta el HUD no anuncia el clima",
+		colapso.begins_with(gm4._deadlockText()) and not (catalogo["drought"]["name"] in colapso), colapso);
+	gm4._weather_end_id = "storm";
+	gm4._weather_end_at = gm4.run_time;
+	_check("ni siquiera un fin reciente",
+		not (": fin" in gm4.getObjectiveText(esc["bag"], pm4)), gm4.getObjectiveText(esc["bag"], pm4));
+	var spy_susp = SpyCanvas.new();
+	tm4.draw_tints(spy_susp);
+	_check("y draw_tints() no tiñe la zona ni dibuja su contorno",
+		_clima_polys_de(spy_susp, catalogo, "drought").is_empty() and spy_susp.lines.is_empty(),
+		"%d polígonos, %d líneas" % [_clima_polys_de(spy_susp, catalogo, "drought").size(), spy_susp.lines.size()]);
+
+	# --- (5) El orden de las pasadas: tipo → contaminación → clima → colapso. Clima y colapso
+	# no coinciden en el juego (suspendido); aquí se fuerza soltando el gameManager del manager.
+	wm4.setGameManager(null);
+	tm4.set_cell_color(centro, Color(0.2, 0.6, 0.2));
+	var spy_orden = SpyCanvas.new();
+	tm4.draw_tints(spy_orden);
+	var tm_script = load("res://entities/tilemap/tileMap.gd");
+	var clima_idx = _clima_polys_de(spy_orden, catalogo, "drought");
+	var colapso_idx = [];
+	for p in _diamantes_colapso(spy_orden, tm_script):
+		colapso_idx.append(spy_orden.polys.find(p));
+	var contaminacion_idx = [];
+	for i in spy_orden.polys.size():
+		var c = spy_orden.polys[i]["color"];
+		if _near(c.r, 1.0) and _near(c.g, 0.15) and _near(c.b, 0.0):
+			contaminacion_idx.append(i);
+	_check("hay de las tres pasadas (precondición)",
+		not clima_idx.is_empty() and not colapso_idx.is_empty() and not contaminacion_idx.is_empty());
+	_check("el clima va DESPUÉS de la contaminación", contaminacion_idx.max() < clima_idx.min(),
+		"%s / %s" % [str(contaminacion_idx.max()), str(clima_idx.min())]);
+	_check("y ANTES del colapso", clima_idx.max() < colapso_idx.min(),
+		"%s / %s" % [str(clima_idx.max()), str(colapso_idx.min())]);
+	_check("el overlay sigue siendo el TintOverlay a z 1 y el StatusOverlay a z 3 (la pasada no crea otro)",
+		tm4.get_node_or_null("TintOverlay") != null and tm4.get_node("TintOverlay").z_index == 1
+		and tm4.get_node_or_null("StatusOverlay") != null and tm4.get_node("StatusOverlay").z_index == 3);
+	tm4.setWeatherManager(null);
+	_limpiar([tm4, gm4, esc["bag"], pm4, wm4]);
+
+	# --- (6) La zona: qué casillas tiñe, que las tiñe entera mientras dura y que al retirarse
+	# deja de pintarla. Mapa 16x10 entero de suelo.
+	var tm = _tilemap_con_suelo(_clima_mapa_16x10());
+	var spy_sin = SpyCanvas.new();
+	tm.draw_tints(spy_sin);
+	_check("sin WeatherManager inyectado draw_tints() no dibuja contornos", spy_sin.lines.is_empty());
+	tm.setWeatherManager(wm);
+	wm.active.clear();
+	var tormenta = wm.startEvent("storm", Rect2i(14, 8, 4, 3));   # se recorta a 2x2 en la esquina
+	var celdas = tm.weatherCells(tormenta);
+	_check("weatherCells() da las casillas del rectángulo ya recortado",
+		celdas.size() == 4 and celdas.has(Vector2i(15, 9)) and not celdas.has(Vector2i(16, 9)), str(celdas));
+	var spy_viva = SpyCanvas.new();
+	tm.draw_tints(spy_viva);
+	_check("con la tormenta viva se tiñe cada casilla de su zona con el color del catálogo",
+		_clima_polys_de(spy_viva, catalogo, "storm").size() == celdas.size(),
+		"%d de %d" % [_clima_polys_de(spy_viva, catalogo, "storm").size(), celdas.size()]);
+	var col_t = catalogo["storm"]["color"];
+	var borde = [];
+	for l in spy_viva.lines:
+		if _near(l["color"].r, float(col_t[0])) and _near(l["color"].b, float(col_t[2])):
+			borde.append(l);
+	_check("y su contorno del color del catálogo: 8 lados para un bloque de 2x2", borde.size() == 8,
+		"%d de %d líneas" % [borde.size(), spy_viva.lines.size()]);
+	var opaco = true;
+	for l in borde:
+		if l["color"].a <= float(col_t[3]):
+			opaco = false;
+	_check("más opaco que el relleno", opaco);
+	_check("y con su filo oscuro debajo, uno por lado y pintado ANTES que el color",
+		spy_viva.lines.size() == 16 and spy_viva.lines.find(borde[0]) == 8, str(spy_viva.lines.size()));
+	wm.advance(float(catalogo["storm"]["duration"]) + 0.1);
+	var spy_ida = SpyCanvas.new();
+	tm.draw_tints(spy_ida);
+	_check("al retirarse la tormenta la zona deja de pintarse",
+		wm.active.is_empty() and _clima_polys_de(spy_ida, catalogo, "storm").is_empty()
+		and spy_ida.lines.is_empty());
+
+	# --- (7) El cableado de Main._start_game(): el gameManager recibe el manager y su fin.
+	var main = _main_para_run();
+	main.weather_enabled = false;
+	main._start_game("standard");
+	var wr = main.weatherManager;
+	wr.log_events = false;
+	_check("_start_game() inyecta el WeatherManager en el gameManager",
+		wr != null and main.gameManager.weather_manager == wr);
+	_check("y conecta weather_ended al aviso de fin",
+		wr.weather_ended.is_connected(main.gameManager._on_weather_ended));
+	tm.setWeatherManager(null);
+	_limpiar([main.placer, main.mapLoader, main, tm, gm, bag, gm3, bag3, pm3, wm]);
+
+# ---------- Clima M0: el modo «clima agresivo» para jugar a mano ----------
+
+# M0 se juega a mano con el clima en su versión más agresiva. `BALACTORIO_WEATHER=aggressive`
+# pone la tirada al tope; sin la variable, nada cambia; en build exportada se ignora (como
+# AUGUR_KEY). La lectura del entorno va por parámetro (aggressiveFromEnv) para probar las ramas
+# sin tocar el entorno real de quien corre la suite.
+func _test_clima_m0(file_data):
+	print("Clima M0 — el modo «clima agresivo»");
+	var script_wm = load("res://managers/weatherManager.gd");
+	var pm = load("res://managers/pollutionManager.gd").new();
+	pm.peak_pollution = 20.0;
+
+	# --- (1) Sin el override, la probabilidad es la de siempre.
+	var wm = _new_wm(file_data);
+	wm.setPollutionManager(pm);
+	var esperada = min(script_wm.MAX_CHANCE, script_wm.BASE_CHANCE + script_wm.PEAK_FACTOR * 20.0);
+	_check("sin override, el manager nace sin modo agresivo", wm.aggressive == false);
+	_check("y la probabilidad es BASE + PEAK × pico (0,15 + 0,004 × 20 = 0,23)",
+		_near(wm.rollChance(), esperada) and esperada < script_wm.MAX_CHANCE, str(wm.rollChance()));
+
+	# --- (2) Con el override, MAX_CHANCE sea cual sea el pico; y al quitarlo vuelve.
+	wm.aggressive = true;
+	_check("con el modo agresivo la probabilidad es MAX_CHANCE",
+		_near(wm.rollChance(), script_wm.MAX_CHANCE), str(wm.rollChance()));
+	pm.peak_pollution = 0.0;
+	_check("también con el mapa limpio (pico 0)", _near(wm.rollChance(), script_wm.MAX_CHANCE));
+	wm.aggressive = false;
+	_check("y sin él, pico 0 vuelve a BASE_CHANCE", _near(wm.rollChance(), script_wm.BASE_CHANCE));
+
+	# --- (3) La lectura del entorno: solo «aggressive», y nunca en build exportada.
+	_check("variable vacía -> no agresivo", script_wm.aggressiveFromEnv(false, "") == false);
+	_check("«aggressive» fuera de build -> agresivo", script_wm.aggressiveFromEnv(false, "aggressive") == true);
+	_check("tolera mayúsculas y espacios", script_wm.aggressiveFromEnv(false, " Aggressive ") == true);
+	_check("otro valor -> no agresivo", script_wm.aggressiveFromEnv(false, "calm") == false);
+	_check("en build exportada (template) se ignora", script_wm.aggressiveFromEnv(true, "aggressive") == false);
+
+	# --- (4) El cableado real de Main._start_game(): lo que diga el entorno de ESTA ejecución de
+	#     la suite (sin la variable, que es lo normal, sale apagado).
+	var main = _main_para_run();
+	main.weather_enabled = false;
+	main._start_game("standard");
+	var wr = main.weatherManager;
+	wr.log_events = false;
+	var pide = script_wm.aggressiveFromEnv(OS.has_feature("template"), OS.get_environment("BALACTORIO_WEATHER"));
+	_check("_start_game() aplica al manager lo que pide el entorno (%s)" % ("agresivo" if pide else "normal"),
+		wr.aggressive == pide);
+	if OS.get_environment("BALACTORIO_WEATHER") == "":
+		_check("sin la variable, la run nace con la probabilidad de siempre",
+			wr.aggressive == false and _near(wr.rollChance(),
+				min(script_wm.MAX_CHANCE, script_wm.BASE_CHANCE + script_wm.PEAK_FACTOR * float(main.pollutionManager.peak_pollution))));
+	_limpiar([main.placer, main.mapLoader, main, wm, pm]);
+
+# ---------- Clima M6: la derrota sigue en pie con clima ----------
+
+# Un tramo de MUNDO con varios sistemas a la vez, sin Main: TileMap 16x10 de suelo con su
+# PollutionManager, factorías inicializadas colgando de root y, si `op.wm`, un WeatherManager
+# HERMANO (hijo de root con su nombre, donde lo buscan las factorías) inyectado en el TileMap.
+# Cada frame (1/60) avanza el clima, el pasivo y el contagio, en el orden de Main._tick_world();
+# cada 60 frames (1 s) hace un update() de cada factoría y apunta lo que ha limpiado, su razón y
+# su ahogo. Lo suelta TODO al acabar: find_child("PollutionManager") devuelve el primero del
+# árbol y el hermano "WeatherManager" se busca por nombre, así que los tramos van en serie.
+#   op: wm (bool), eventos ([[id, Rect2i]]), caducar (bool: retira los eventos antes del tramo),
+#       suciedad ({celda: cantidad}), lagos ([celda]), segundos (float),
+#       fabricas ([[tipo, celda, recibe, material, pollution, ftype, workers, insumo]]).
+func _clima_m6_tramo(file_data, op):
+	var pm = _new_pm();
+	root.add_child(pm);
+	var tm = _tilemap_con_suelo(_clima_mapa_16x10());
+	tm.setPollutionManager(pm);
+	tm.cell_types = {};
+	tm.tile_type_data = { "lake": { "passive_pollution_per_tick": -0.5, "buildable": false } };
+	for c in op.get("lagos", []):
+		tm.cell_types[c] = "lake";
+	var suciedad = op.get("suciedad", {});
+	for c in suciedad:
+		pm.addPollution(suciedad[c], c);
+	var wm = null;
+	if op.get("wm", false):
+		wm = _clima_wm_en_arbol(file_data);
+		tm.setWeatherManager(wm);
+		for e in op.get("eventos", []):
+			wm.startEvent(e[0], e[1]);
+		if op.get("caducar", false):
+			wm.advance(1000.0);
+	var fabs = [];
+	var producidos = [];
+	for d in op.get("fabricas", []):
+		var f = _clima_fab(d[0], d[1], d[2], d[3], d[4], d[5], d[6]);
+		f.workers_assigned = d[6];
+		if d.size() > 7 and d[7] != null:
+			f.receiveMaterial(d[7], 99);
+		var idx = fabs.size();
+		f.resource_produced.connect(func(m, n, _p): producidos.append([idx, m, n]));
+		fabs.append(f);
+	var r = {
+		"primero": root.find_child("PollutionManager", true, false) == pm,
+		"hermano": wm == null or root.get_node_or_null("WeatherManager") == wm,
+		"total0": pm.total_pollution, "peak0": pm.peak_pollution,
+		"limpiado": [], "razones": [], "chokes": [],
+	};
+	for f in fabs:
+		r["limpiado"].append([]);
+		r["razones"].append([]);
+		r["chokes"].append([]);
+	var dt = 1.0 / 60.0;
+	var frames = int(round(float(op.get("segundos", 1.0)) * 60.0));
+	for i in range(frames):
+		if wm != null:
+			wm.advance(dt);
+		tm.tick_passive(pm, dt);
+		tm.tick_contagion(pm, dt);
+		if (i + 1) % 60 == 0:
+			for k in fabs.size():
+				var antes = pm.total_pollution;
+				fabs[k].update();
+				r["limpiado"][k].append(antes - pm.total_pollution);
+				r["razones"][k].append(fabs[k].blocked_reason);
+				r["chokes"][k].append(fabs[k].getPollutionChoke());
+	r["celdas"] = pm.pollution_per_cell.duplicate();
+	r["total"] = pm.total_pollution;
+	r["peak"] = pm.peak_pollution;
+	r["producidos"] = producidos;
+	r["activos"] = wm.active.size() if wm != null else 0;
+	r["contagion_rate"] = pm.contagion_rate;
+	r["contagion_pollution"] = pm.contagion_pollution;
+	tm.setWeatherManager(null);
+	var nodos = fabs + [tm, pm];
+	if wm != null:
+		nodos.append(wm);
+	_limpiar(nodos);
+	return r;
+
+# M6 no re-mide nada (no hay instrumento desde el 2026-09-23): fija las RELACIONES que el clima
+# no puede romper, montadas con varios sistemas a la vez. Lo que ya prueba un hito anterior se
+# cita y no se repite: sequía ×1,5 y retirada (M2 §1), restauradora bajo sequía en un tick
+# (M2 §3) y bajo tormenta en un tick (M3 §4), viento 8×amount de UN foco en 1 s (M4 §1),
+# suspensión B1 de cada consulta por separado (M1 §4, M2 §2/§4, M3 §3, M4 §5), tick_passive
+# sin manager == sin eventos (M2 §6), HUD sin eventos == antes (M5 §1), y contagion_rate 0,12 /
+# contagion_pollution 12,5 (M4 §7).
+func _test_clima_m6(file_data):
+	print("Clima M6 — la derrota sigue en pie con clima");
+	var script_wm = load("res://managers/weatherManager.gd");
+	var script_gm = load("res://managers/gameManager.gd");
+	var todo = Rect2i(0, 0, 16, 10);
+
+	# --- (1) Restauradoras bajo CADA clima, 10 s de mundo con contagio y pasivo corriendo: no
+	# se ahogan, nunca dicen storm/choke, y cada tick limpian EXACTAMENTE lo mismo que sin
+	# clima (la sequía no reduce ni amplifica, la lluvia y el viento van por otro lado).
+	# Casillas a 20 (saturadas): una productora ahí tendría choke 0.
+	var suciedad = {};
+	for centro in [Vector2i(4, 4), Vector2i(10, 5)]:
+		for c in _vecindario(centro):
+			suciedad[c] = 20.0;
+	var restauradoras = [
+		["Reforester", Vector2i(4, 4), null, null, -4.0, "restoration", 0, null],
+		["WaterTreatment", Vector2i(10, 5), ["stone"], null, -7.0, "restoration", 1, "stone"],
+	];
+	var base = _clima_m6_tramo(file_data, { "wm": true, "suciedad": suciedad,
+		"fabricas": restauradoras, "segundos": 10.0 });
+	_check("tramo de restauradoras: el PollutionManager y el WeatherManager son los del tramo (precondición)",
+		base["primero"] and base["hermano"]);
+	var limpia_base = true;
+	for k in 2:
+		if base["limpiado"][k].size() != 10:
+			limpia_base = false;
+		for v in base["limpiado"][k]:
+			if v <= 0.0:
+				limpia_base = false;
+	_check("sin clima las dos restauradoras limpian en cada uno de los 10 ticks (precondición)",
+		limpia_base, str(base["limpiado"]));
+	for id in ["drought", "rain", "storm", "wind"]:
+		var r = _clima_m6_tramo(file_data, { "wm": true, "eventos": [[id, todo]], "suciedad": suciedad,
+			"fabricas": restauradoras, "segundos": 10.0 });
+		var sin_ahogo = true;
+		var sin_parada = true;
+		var igual = r["primero"] and r["hermano"] and r["activos"] == 1;
+		for k in 2:
+			for ch in r["chokes"][k]:
+				if ch != 1.0:
+					sin_ahogo = false;
+			for rz in r["razones"][k]:
+				if rz != "":
+					sin_parada = false;
+			if r["limpiado"][k].size() != base["limpiado"][k].size():
+				igual = false;
+				continue;
+			for t in r["limpiado"][k].size():
+				if not _near(r["limpiado"][k][t], base["limpiado"][k][t], 0.00001):
+					igual = false;
+		_check("bajo %s, Reforester y WaterTreatment alimentada: getPollutionChoke() == 1.0 en cada tick" % id,
+			sin_ahogo, str(r["chokes"]));
+		_check("bajo %s, ninguna dice 'storm' ni 'choke' (ni otra razón)" % id, sin_parada, str(r["razones"]));
+		_check("bajo %s, cada tick limpian exactamente lo mismo que sin clima" % id, igual,
+			"%s contra %s" % [str(r["limpiado"]), str(base["limpiado"])]);
+
+	# --- (2) Viento con VARIOS focos, 5 s de mundo: el total y el pico suben lo mismo con
+	# viento que sin él y que sin manager; solo cambia el reparto. Focos en el interior, en el
+	# borde de sotavento (contagio normal), dos pegados (sotavento de uno = el otro foco) y 5 s
+	# para que ninguna casilla de sotavento cruce 12,5 y se vuelva foco (8 × 0,12 × 5 = 4,8).
+	var focos = {};
+	for c in [Vector2i(3, 3), Vector2i(8, 5), Vector2i(15, 2), Vector2i(12, 8), Vector2i(5, 7), Vector2i(6, 7)]:
+		focos[c] = 13.0;
+	var sin_wm = _clima_m6_tramo(file_data, { "wm": false, "suciedad": focos, "segundos": 5.0 });
+	var calma = _clima_m6_tramo(file_data, { "wm": true, "suciedad": focos, "segundos": 5.0 });
+	var viento = _clima_m6_tramo(file_data, { "wm": true, "eventos": [["wind", todo]],
+		"suciedad": focos, "segundos": 5.0 });
+	var sube_sin = sin_wm["total"] - sin_wm["total0"];
+	var sube_con = viento["total"] - viento["total0"];
+	_check("tramo de focos: los managers son los del tramo y el viento sigue vivo (precondición)",
+		sin_wm["primero"] and calma["primero"] and calma["hermano"] and viento["primero"]
+		and viento["hermano"] and viento["activos"] == 1);
+	_check("sin viento los 6 focos generan contagio (precondición)", sube_sin > 1.0, "%f" % sube_sin);
+	_check("con viento, el incremento de total_pollution en 5 s es el mismo que sin él",
+		_near(sube_con, sube_sin, 0.001), "%f contra %f" % [sube_con, sube_sin]);
+	_check("y el de peak_pollution también",
+		_near(viento["peak"] - viento["peak0"], sin_wm["peak"] - sin_wm["peak0"], 0.001),
+		"%f contra %f" % [viento["peak"] - viento["peak0"], sin_wm["peak"] - sin_wm["peak0"]]);
+	_check("y con el manager presente sin viento, igual que sin manager",
+		_near(calma["total"] - calma["total0"], sube_sin, 0.001));
+	var reparte_distinto = false;
+	for c in viento["celdas"]:
+		if not _near(viento["celdas"][c], sin_wm["celdas"].get(c, 0.0), 0.001):
+			reparte_distinto = true;
+			break;
+	_check("lo único que cambia es el reparto: hay casillas con otra suciedad", reparte_distinto);
+	_check("ninguna casilla de sotavento se ha vuelto foco (precondición de la conservación)",
+		viento["celdas"].get(Vector2i(4, 3), 0.0) < 12.5 and viento["celdas"].get(Vector2i(7, 7), 0.0) < 12.5);
+	_check("y tras el tramo con viento el PollutionManager conserva contagion_rate 0,12 y contagion_pollution 12,5",
+		_near(viento["contagion_rate"], 0.12) and _near(viento["contagion_pollution"], 12.5));
+
+	# --- (3) Plan B 1 integrado: la ventana de punto muerto ABIERTA DE VERDAD por
+	# _evaluate_deadlock() sobre el mapa saturado, clima agresivo (probabilidad al tope) y
+	# sembrado, y 2×ROLL_INTERVAL + 5 s de reloj corriendo: no nace nada y los activos no
+	# descuentan. El control (misma semilla, sin ventana) demuestra que en ese tramo SÍ habría
+	# tiradas con premio. Y la derrota llega a su hora, con clima o sin él.
+	var tramo = 2.0 * script_wm.ROLL_INTERVAL + 5.0;
+	var gracia = script_gm.DEADLOCK_GRACE;
+	var centro = Vector2i(5, 5);
+	var nacidos = {};
+	for abierta in [false, true]:
+		var pm = _new_pm();
+		var esc = _escenario_muerto(file_data, centro, pm);
+		esc["pm"] = pm;
+		var gm = esc["gm"];
+		var wm = _new_wm(file_data);
+		wm.enabled = true;
+		wm.log_events = false;
+		wm.aggressive = true;
+		wm.setSeed(20260930);
+		wm.setPollutionManager(pm);
+		wm.setGameManager(gm);
+		gm.setWeatherManager(wm);
+		esc["tm"].setWeatherManager(wm);
+		wm.startEvent("drought", Rect2i(4, 4, 3, 3));
+		wm.startEvent("wind", Rect2i(3, 3, 5, 5));
+		var restantes = [wm.active[0].remaining, wm.active[1].remaining];
+		var originales = [wm.active[0], wm.active[1]];
+		var reloj = wm._roll_timer;
+		var n = [0];
+		wm.weather_started.connect(func(_id, _r): n[0] += 1);
+		gm.run_lost.connect(func(stats): esc["perdidas"].append(stats));
+		var t0 = 10.0;
+		var avanza = func(): wm.advance(1.0 / 60.0);
+		if not abierta:
+			var frames = int(round(tramo * 60.0));
+			for i in range(frames):
+				avanza.call();
+			nacidos["control"] = n[0];
+			_check("control sin ventana: en %.0f s el clima agresivo sembrado sí saca eventos" % tramo,
+				n[0] >= 1, "nacidos %d" % n[0]);
+			_check("y los activos del control sí descuentan (la sequía y el viento de partida ya se retiraron)",
+				not wm.active.has(originales[0]) and not wm.active.has(originales[1]), str(wm.active.size()));
+		else:
+			gm.run_time = t0;
+			gm.update(esc["bag"], pm);
+			_check("_evaluate_deadlock() abre la ventana con dos eventos activos encima",
+				_near(gm.deadlock_timer, t0) and wm.isSuspended(), "deadlock_timer %f" % gm.deadlock_timer);
+			var t = _correr_hasta(esc, t0, t0 + gracia - 0.1, avanza);
+			_check("a mitad de gracia la ventana sigue abierta, sin eventos nuevos",
+				gm.deadlock_timer > 0.0 and n[0] == 0 and esc["perdidas"].is_empty());
+			_correr_hasta(esc, t, t0 + tramo, avanza);
+			_check("en %.0f s (≥ 2×ROLL_INTERVAL) con la ventana abierta no nace ni un evento" % tramo,
+				n[0] == 0 and wm.active.size() == 2 and wm._roll_timer == reloj, "nacidos %d" % n[0]);
+			_check("y los dos activos no han descontado nada",
+				wm.active[0].remaining == restantes[0] and wm.active[1].remaining == restantes[1],
+				"%f / %f" % [wm.active[0].remaining, wm.active[1].remaining]);
+			_check("y la derrota llega igual: run_lost una sola vez, al agotarse DEADLOCK_GRACE",
+				esc["perdidas"].size() == 1 and abs(float(esc["perdidas"][0]["time"]) - (t0 + gracia)) < 0.05,
+				str(esc["perdidas"]));
+		esc["tm"].setWeatherManager(null);
+		gm.setWeatherManager(null);
+		_limpiar([esc["tm"], gm, esc["bag"], pm, wm]);
+
+	# --- (4) La condición 3 del punto muerto no depende del clima: sobre el MISMO mapa,
+	# hasBuildableCell() (regla estricta) y canPlaceFactory() de las 160 casillas dan lo mismo
+	# sin manager, con manager sin eventos y con los cuatro climas cubriendo el mapa entero.
+	var pm4 = _new_pm();
+	var tm4 = _tilemap_con_suelo(_clima_mapa_16x10());
+	tm4.setPollutionManager(pm4);
+	tm4.cell_types = {};
+	tm4.tile_type_data = file_data["TileTypes"];
+	var wm4 = _new_wm(file_data);
+	wm4.log_events = false;
+	var ocupante = _new_factory("WoodCutter", Vector2i(7, 4));
+	var mapa = _clima_mapa_16x10();
+	for c in mapa:
+		pm4.addPollution(20.0, c);
+	# Cuatro mapas: saturado, con una casilla libre, con esa casilla ocupada y con ella tóxica.
+	var casos = [
+		["saturado", func(): pass, [], false],
+		["una casilla limpia", func(): pm4.removePollution(20.0, Vector2i(7, 4)), [], true],
+		["la limpia, ocupada", func(): pass, [ocupante], false],
+		["la limpia, tóxica", func(): tm4.cell_types[Vector2i(7, 4)] = "toxic", [], false],
+	];
+	var modos = ["sin_manager", "sin_eventos", "cuatro_climas"];
+	for caso in casos:
+		caso[1].call();
+		var respuestas = [];
+		for modo in modos:
+			wm4.active.clear();
+			tm4.setWeatherManager(null if modo == "sin_manager" else wm4);
+			if modo == "cuatro_climas":
+				for id in ["drought", "rain", "storm", "wind"]:
+					wm4.startEvent(id, todo);
+			var celdas = [];
+			for c in mapa:
+				celdas.append(tm4.canPlaceFactory(c, caso[2]));
+			respuestas.append([tm4.hasBuildableCell(caso[2]), celdas]);
+		_check("mapa %s: hasBuildableCell() == %s sin clima (precondición)" % [caso[0], str(caso[3])],
+			respuestas[0][0] == caso[3], str(respuestas[0][0]));
+		_check("mapa %s: mismo hasBuildableCell() y mismas 160 canPlaceFactory() con y sin clima" % caso[0],
+			respuestas[0] == respuestas[1] and respuestas[0] == respuestas[2]);
+	tm4.setWeatherManager(null);
+	_limpiar([tm4, pm4, wm4, ocupante]);
+
+	# --- (5) Sin eventos activos, un tramo de mundo con TODO (productoras que se ahogan, una sin
+	# insumo, un Reforester, un lago, un foco que contagia) da EXACTAMENTE lo mismo sin manager,
+	# con el manager hermano sin eventos, y con eventos que ya se retiraron antes del tramo.
+	var mundo = {};
+	for c in _vecindario(Vector2i(10, 6)):
+		mundo[c] = 10.0;
+	mundo[Vector2i(7, 8)] = 13.0;
+	mundo[Vector2i(12, 2)] = 6.0;
+	var fabricas = [
+		["WoodCutter", Vector2i(3, 3), null, "wood", 2.0, "production", 0, null],
+		["WoodCutter", Vector2i(4, 3), null, "wood", 2.0, "production", 0, null],
+		["WoodProcessing", Vector2i(3, 5), ["wood"], "plank", 2.0, "production", 0, null],
+		["Reforester", Vector2i(10, 6), null, null, -4.0, "restoration", 0, null],
+	];
+	var tramos = [];
+	for op in [{ "wm": false }, { "wm": true }, { "wm": true, "caducar": true,
+			"eventos": [["drought", todo], ["rain", todo], ["storm", todo], ["wind", todo]] }]:
+		op["suciedad"] = mundo;
+		op["lagos"] = [Vector2i(13, 2)];
+		op["fabricas"] = fabricas;
+		op["segundos"] = 30.0;
+		tramos.append(_clima_m6_tramo(file_data, op));
+	var a = tramos[0];
+	_check("tramo de mundo: los managers son los del tramo, y los eventos caducados ya no están (precondición)",
+		a["primero"] and tramos[1]["primero"] and tramos[1]["hermano"] and tramos[2]["primero"]
+		and tramos[2]["hermano"] and tramos[2]["activos"] == 0);
+	var razones_a = {};
+	for k in a["razones"].size():
+		for rz in a["razones"][k]:
+			razones_a[rz] = true;
+	_check("el tramo ejercita ahogo, insumo, producción y limpieza (precondición)",
+		razones_a.has("choke") and razones_a.has("input") and razones_a.has("")
+		and not a["producidos"].is_empty() and a["limpiado"][3][0] > 0.0, str(razones_a.keys()));
+	for i in [1, 2]:
+		var b = tramos[i];
+		var nombre = "con el manager sin eventos" if i == 1 else "con eventos ya retirados";
+		_check("%s: la suciedad de cada casilla es idéntica a sin manager" % nombre, b["celdas"] == a["celdas"]);
+		_check("%s: total, pico, producción, razones y ahogos idénticos" % nombre,
+			b["total"] == a["total"] and b["peak"] == a["peak"] and b["producidos"] == a["producidos"]
+			and b["razones"] == a["razones"] and b["chokes"] == a["chokes"] and b["limpiado"] == a["limpiado"]);
+
+	# --- (6) Guardia: la constante de la derrota que ningún hito del clima cita. Las otras dos
+	# (contagion_rate 0,12, contagion_pollution 12,5) las fija M4 §7 y, tras un tramo con
+	# viento, el §2 de arriba.
+	_check("DEADLOCK_GRACE sigue en 25 s (provisional, sin re-medir con clima)", _near(gracia, 25.0),
+		"%f" % gracia);
+
+# ---------- Serialización M1: la captura ----------
+
+# ¿Es `v` JSON puro? Solo nulos, booleanos, números, Strings, Arrays y Dictionaries de claves
+# String. Hace falta aparte del round-trip porque `JSON.stringify()` NO falla con un Vector2i:
+# lo escribe como el texto "(3, 4)" en silencio, y lo mismo con un nodo o un Object. Y un int
+# por encima de 2^53 tampoco cuenta como puro: JSON lo devuelve como double y pierde bits, que
+# es justo lo que le pasaría al estado del RNG del clima guardado como número.
+func _json_puro(v) -> bool:
+	match typeof(v):
+		TYPE_NIL, TYPE_BOOL, TYPE_FLOAT, TYPE_STRING:
+			return true;
+		TYPE_INT:
+			return absi(v) <= 9007199254740992;
+		TYPE_ARRAY:
+			for x in v:
+				if not _json_puro(x):
+					return false;
+			return true;
+		TYPE_DICTIONARY:
+			for k in v:
+				if typeof(k) != TYPE_STRING or not _json_puro(v[k]):
+					return false;
+			return true;
+	return false;
+
+# Igualdad de dos valores JSON tras una ida y vuelta. Dos concesiones, las dos de Godot y no del
+# snapshot: `parse_string()` devuelve TODO número como float (40 vuelve como 40.0, y
+# `{"a": 1} == {"a": 1.0}` es false en GDScript), y `stringify()` escribe los floats con 15 cifras
+# significativas. Por eso los números se comparan por valor con tolerancia relativa 1e-12, y todo
+# lo demás —claves, Strings, nulos, longitudes— exacto.
+func _json_igual(a, b) -> bool:
+	var ta = typeof(a);
+	var tb = typeof(b);
+	if (ta == TYPE_INT or ta == TYPE_FLOAT) and (tb == TYPE_INT or tb == TYPE_FLOAT):
+		return abs(float(a) - float(b)) <= 1e-12 * max(1.0, abs(float(a)));
+	if ta != tb:
+		return false;
+	match ta:
+		TYPE_DICTIONARY:
+			if a.size() != b.size():
+				return false;
+			for k in a:
+				if not b.has(k) or not _json_igual(a[k], b[k]):
+					return false;
+			return true;
+		TYPE_ARRAY:
+			if a.size() != b.size():
+				return false;
+			for i in a.size():
+				if not _json_igual(a[i], b[i]):
+					return false;
+			return true;
+	return a == b;
+
+func _claves_ordenadas(d) -> Array:
+	var ks = Array(d.keys());
+	ks.sort();
+	return ks;
+
+func _test_serializacion_m1(file_data):
+	print("Serialización M1 — la captura de la run");
+	var run_save = load("res://managers/runSave.gd");
+
+	# --- (1) La conversión de celdas, en los dos sentidos y con negativos: las direcciones de
+	# las cintas son Vector2i(-1, 0) y salen por la misma función.
+	var ida_vuelta = true;
+	for c in [Vector2i(0, 0), Vector2i(3, 4), Vector2i(-1, 0), Vector2i(12, -7)]:
+		if run_save.parse_cell(run_save.cell_key(c)) != c:
+			ida_vuelta = false;
+	_check("runSave: cell_key/parse_cell es una ida y vuelta exacta, negativos incluidos",
+		ida_vuelta and run_save.cell_key(Vector2i(3, 4)) == "3,4");
+	# Y el motivo de que exista: stringify no protesta ante un Vector2i, lo convierte en texto.
+	var traicion = JSON.parse_string(JSON.stringify({"c": Vector2i(3, 4)}));
+	_check("JSON.stringify convierte un Vector2i en texto en silencio: el round-trip solo no basta",
+		typeof(traicion["c"]) == TYPE_STRING and not _json_puro({"c": Vector2i(3, 4)})
+		and not _json_puro({"n": Node}) and not _json_puro({Vector2i(1, 1): 1.0}),
+		str(traicion));
+
+	# --- (2) Una run de verdad (_start_game()) con todo lo que M1 pide. El JSON se recorta a
+	# forest_01 para que el mapa no dependa de lo que el save de David tenga desbloqueado, y el
+	# clima nace apagado: el evento se arranca a mano.
+	var fd = file_data.duplicate(true);
+	fd["Maps"] = [_mapa_por_id(file_data, "forest_01")];
+	var main = _main_para_run();
+	main.fileData = fd;
+	main.weather_enabled = false;
+	main._start_game("standard");
+	main.weatherManager.log_events = false;
+	var tm = main.get_node("TileMap");
+	var bolsa = main.get_node("Player").get_node("Bag");
+	_check("la run arranca en forest_01 con el paquete standard (precondición)",
+		main._run_map_id == "forest_01" and main._run_package_id == "standard",
+		"%s / %s" % [main._run_map_id, main._run_package_id]);
+
+	# Cadena: cortadora → cinta → serrería, por el camino del jugador.
+	main._on_factory_chosen("WoodCutter", Vector2i(7, 6));
+	main._on_factory_chosen("WoodProcessing", Vector2i(10, 6));
+	var tendida = main.beltNetwork.place_drag(Vector2i(7, 6), Vector2i(10, 6), main.factoryArray);
+	var cortadora = main._get_factory_at_cell(Vector2i(7, 6));
+	var sierra = main._get_factory_at_cell(Vector2i(10, 6));
+	_check("cadena montada: dos factorías nuevas y dos casillas de cinta entre ellas (precondición)",
+		cortadora != null and sierra != null and tendida.size() == 2 and main.factoryArray.size() == 3,
+		"cinta %d, factorías %d" % [tendida.size(), main.factoryArray.size()]);
+	# Estado que build() no reproduciría, para que la captura tenga qué llevarse.
+	cortadora.timer = 7;
+	cortadora.production_debt = 0.35;
+	sierra.input_buffer = {"wood": 3};
+	sierra.output_buffer = 2;
+	var almacen = main._get_factory_at_cell(Vector2i(13, 8));
+	almacen.emit_route_cell = Vector2i(12, 8);
+	main.gameManager.run_time = 12.75;
+	main.get_node("Player").applySpeedBoost("WoodCutter", 1);
+
+	# Una `toxic` por el downside de verdad de una carta (casilla al azar entre las libres).
+	main._apply_map_downside({"cells": 1, "type": "toxic"});
+	var toxicas = _celdas_de_tipo(tm, "toxic");
+	# Y un clima vivo.
+	var ev = main.weatherManager.startEvent("rain", Rect2i(2, 3, 3, 2));
+	_check("una toxic degradada y un clima activo (precondición)",
+		toxicas.size() == 1 and ev != null and main.weatherManager.active.size() == 1);
+
+	# --- (3) Primera captura, SIN pantalla de cartas: la oferta pendiente es null.
+	var snap1 = main._capture_run();
+	_check("sin pantalla de cartas abierta, pending_offer es null", snap1.get("pending_offer", "falta") == null);
+	_check("antes de la ruina, cells es exactamente la toxic degradada",
+		toxicas.size() == 1 and snap1["cells"] == {run_save.cell_key(toxicas[0]): "toxic"}, str(snap1["cells"]));
+
+	# --- (4) La ruina, consumida por el camino del jugador: construir encima regala una carta y
+	# abre la pantalla —que es, de paso, la oferta pendiente que hay que capturar—.
+	main._on_factory_chosen("WoodCutter", Vector2i(12, 6));
+	var pantalla = main.get_node_or_null("UpgradeScreen");
+	_check("construir sobre la ruina la consume y abre la carta regalada (precondición)",
+		not tm.cell_types.has(Vector2i(12, 6)) and pantalla != null and main._offer_ids.size() == 1);
+	var snap = main._capture_run();
+
+	# --- (5) Todos los bloques de la tabla, con todas sus claves.
+	_check("el snapshot tiene todos los bloques del plan y ninguno más",
+		_claves_ordenadas(snap) == ["bag", "belts", "cells", "factories", "game", "map_id",
+			"package_id", "params_hash", "pending_offer", "player", "pollution",
+			"prev_checkpoint_t", "resumed_from", "version", "weather"],
+		str(_claves_ordenadas(snap)));
+	_check("cabecera: versión, huella del balance, mapa, paquete y run_id de la run viva",
+		snap["version"] == run_save.VERSION and String(snap["params_hash"]).length() == 12
+		and snap["map_id"] == "forest_01" and snap["package_id"] == "standard"
+		and snap["resumed_from"] == main.analytics.run_id(),
+		"%s %s" % [snap["params_hash"], snap["resumed_from"]]);
+	_check("bag: bolsa, workers y reserva",
+		_claves_ordenadas(snap["bag"]) == ["bag", "reserved", "workers_assigned", "workers_total"]
+		and int(snap["bag"]["bag"]["wood"]["quantity"]) == bolsa.getQuantity("wood"));
+	_check("player: factorías disponibles y modificadores acumulados",
+		_claves_ordenadas(snap["player"]) == ["availableFactories", "outputModifiers", "speedModifiers"]
+		and int(snap["player"]["speedModifiers"].get("WoodCutter", 0)) == main.get_node("Player").speedModifiers["WoodCutter"]);
+	_check("pollution: total, pico y la suciedad por casilla con claves \"x,y\"",
+		_claves_ordenadas(snap["pollution"]) == ["peak_pollution", "pollution_per_cell", "total_pollution"]
+		and snap["pollution"]["pollution_per_cell"].size() == main.pollutionManager.pollution_per_cell.size()
+		and snap["pollution"]["pollution_per_cell"].has(run_save.cell_key(toxicas[0])));
+	_check("game: las once variables de la tabla, y ninguna de la ventana de punto muerto",
+		_claves_ordenadas(snap["game"]) == ["active", "current_checkpoint_index", "last_capacity_sample",
+			"last_checkpoint_time", "last_segment_rate", "last_tier", "production_done",
+			"run_time", "segment_capacity_area", "segment_capacity_time", "segment_start_stock"]
+		and _near(snap["game"]["run_time"], 12.75), str(_claves_ordenadas(snap["game"])));
+	var clima = snap["weather"];
+	_check("weather: el evento vivo con su zona como [x,y,w,h], la tirada y el RNG",
+		_claves_ordenadas(clima) == ["_roll_timer", "active", "rng_state"] and clima["active"].size() == 1
+		and clima["active"][0]["id"] == "rain" and clima["active"][0]["rect"] == [2, 3, 3, 2]
+		and _near(clima["active"][0]["remaining"], ev.remaining), str(clima["active"]));
+	_check("el estado del RNG del clima va como String y vuelve exacto con int()",
+		typeof(clima["rng_state"]) == TYPE_STRING and int(clima["rng_state"]) == main.weatherManager._rng.state);
+	var celdas_cinta = [];
+	for tramo in snap["belts"]:
+		celdas_cinta.append(tramo["cell"]);
+	_check("belts: los dos tramos de la cadena, con celda y direcciones en \"x,y\"",
+		celdas_cinta == ["8,6", "9,6"] and _claves_ordenadas(snap["belts"][0]) == ["cell", "dir_in", "dir_out", "filter"]
+		and snap["belts"][0]["dir_in"] == "-1,0" and snap["belts"][0]["dir_out"] == "1,0", str(snap["belts"]));
+	var por_celda = {};
+	for f in snap["factories"]:
+		por_celda[f["cell"]] = f;
+	_check("factories: las cuatro —almacén, cadena y la de la ruina— con los dieciséis campos",
+		snap["factories"].size() == 4 and _claves_ordenadas(snap["factories"][0]) == ["cell", "cost_paid",
+			"emit_route_cell", "input_buffer", "outputAmount", "output_buffer", "pollutionAmount",
+			"production", "production_debt", "synergy_output_bonus", "synergy_pollution_mult",
+			"synergy_tick_bonus", "tickTimer", "timer", "type", "workers_assigned"]
+		and por_celda.has("13,8") and por_celda.has("7,6") and por_celda.has("10,6") and por_celda.has("12,6"),
+		str(por_celda.keys()));
+	_check("factories: el contador `timer`, la deuda, los búferes y el recibo de lo pagado",
+		int(por_celda["7,6"]["timer"]) == 7 and _near(por_celda["7,6"]["production_debt"], 0.35)
+		and por_celda["7,6"]["cost_paid"] == cortadora.cost_paid and not cortadora.cost_paid.is_empty()
+		and por_celda["10,6"]["input_buffer"] == {"wood": 3} and por_celda["10,6"]["output_buffer"] == 2
+		and por_celda["10,6"]["production"] == "plank");
+	_check("factories: emit_route_cell en \"x,y\" o null",
+		por_celda["13,8"]["emit_route_cell"] == "12,8" and por_celda["7,6"]["emit_route_cell"] == null);
+
+	# --- (6) Las mutaciones del mapa, exactamente esas dos: la toxic nueva y la ruina que ya no está.
+	_check("cells es el diff exacto: la toxic degradada y la ruina consumida (null)",
+		snap["cells"] == {run_save.cell_key(toxicas[0]): "toxic", "12,6": null}, str(snap["cells"]));
+	# --- (7) La oferta pendiente, tal cual se mostró.
+	_check("pending_offer: la carta de la ruina, con su fuente y sus ids",
+		snap["pending_offer"] is Dictionary and snap["pending_offer"]["source"] == "ruins"
+		and snap["pending_offer"]["ids"] == main._offer_ids, str(snap["pending_offer"]));
+
+	# --- (8) Lo que hace que se pueda escribir a disco: JSON puro y una ida y vuelta fiel.
+	_check("el snapshot es JSON puro: ni un Vector2i, ni un nodo, ni un Object, ni un int de 64 bits",
+		_json_puro(snap));
+	var vuelta = JSON.parse_string(JSON.stringify(snap));
+	_check("JSON.stringify → JSON.parse_string devuelve el mismo dict (números por valor)",
+		vuelta is Dictionary and _json_igual(snap, vuelta));
+	# Y el comparador no es complaciente: una sola mutación lo pone en rojo.
+	var trucada = JSON.parse_string(JSON.stringify(snap));
+	trucada["cells"]["12,6"] = "ruins";
+	_check("y el comparador ve un solo valor cambiado", not _json_igual(snap, trucada));
+
+	# El árbol quedó pausado por la pantalla de la ruina: se despausa para el resto de la suite.
+	paused = false;
+	_limpiar([main.placer, main.mapLoader, main]);
+
+# ---------- Serialización M2: la restauración en memoria ----------
+
+# El snapshot sin `resumed_from`: es el `run_id` de la run capturada, y la reanudada abre uno
+# nuevo a propósito (la analítica la enlaza en M4), así que es lo único que NO debe coincidir.
+func _sin_run_id(snap) -> Dictionary:
+	var copia = snap.duplicate(true);
+	copia.erase("resumed_from");
+	return copia;
+
+# Un Main de verdad, en el árbol y con el mismo JSON recortado, listo para _continue_game().
+func _main_para_reanudar(fd):
+	var main = _main_para_run();
+	main.fileData = fd;
+	main.weather_enabled = false;
+	return main;
+
+func _cuenta_tipo(main, tipo) -> int:
+	var n = 0;
+	for f in main.factoryArray:
+		if f.type == tipo:
+			n += 1;
+	return n;
+
+func _test_serializacion_m2(file_data):
+	print("Serialización M2 — la restauración en memoria");
+	var fd = file_data.duplicate(true);
+	fd["Maps"] = [_mapa_por_id(file_data, "forest_01")];
+
+	# --- (1) La run original: la de M1 —cadena, cinta, estado que build() no reproduciría, una
+	# toxic degradada, la ruina consumida y un clima vivo— pero con la carta de la ruina YA
+	# elegida, para que esta primera captura no tenga oferta pendiente.
+	var a = _main_para_reanudar(fd);
+	a._start_game("standard");
+	a.weatherManager.log_events = false;
+	a._on_factory_chosen("WoodCutter", Vector2i(7, 6));
+	a._on_factory_chosen("WoodProcessing", Vector2i(10, 6));
+	a.beltNetwork.place_drag(Vector2i(7, 6), Vector2i(10, 6), a.factoryArray);
+	a.beltNetwork.set_belt_filter(Vector2i(9, 6), "wood");
+	var cortadora = a._get_factory_at_cell(Vector2i(7, 6));
+	var sierra = a._get_factory_at_cell(Vector2i(10, 6));
+	cortadora.timer = 7;
+	cortadora.production_debt = 0.35;
+	sierra.input_buffer = {"wood": 3};
+	sierra.output_buffer = 2;
+	a._get_factory_at_cell(Vector2i(13, 8)).emit_route_cell = Vector2i(12, 8);
+	a.gameManager.run_time = 12.75;
+	a._prev_checkpoint_t = 3.5;
+	a.get_node("Player").applySpeedBoost("WoodCutter", 1);
+	a._apply_map_downside({"cells": 1, "type": "toxic"});
+	a.weatherManager.startEvent("rain", Rect2i(2, 3, 3, 2));
+	a._on_factory_chosen("WoodCutter", Vector2i(12, 6));
+	var ruina_ids = a._offer_ids.duplicate();
+	# Por el botón de verdad: la pantalla emite y se libera ella sola. Se saca además del árbol
+	# porque su queue_free() es diferido y seguiría ocupando el nombre «UpgradeScreen»: la del
+	# checkpoint de (5) nacería renombrada y la captura no la vería.
+	var pantalla_ruina = a.get_node_or_null("UpgradeScreen");
+	if pantalla_ruina != null and not ruina_ids.is_empty():
+		pantalla_ruina._on_upgrade_chosen(ruina_ids[0]);
+		a.remove_child(pantalla_ruina);
+	# Un reparto de workers que build() NO reproduciría: se le quita el suyo a la cortadora y se
+	# deja libre, que es lo que haría el panel. Al reconstruir, build() se lo volvería a dar por
+	# orden de llegada; la restauración tiene que dejarla sin él.
+	var bolsa_a = a.get_node("Player").get_node("Bag");
+	if cortadora.workers_assigned > 0:
+		bolsa_a.unassignWorkers(cortadora.workers_assigned);
+		cortadora.workers_assigned = 0;
+	var snap = a._capture_run();
+	_check("la run original lleva cadena, cinta filtrada, toxic, ruina consumida y clima, sin oferta (precondición)",
+		a.factoryArray.size() == 4 and snap["belts"].size() == 2 and snap["cells"].size() == 2
+		and snap["cells"].get("12,6", "falta") == null and snap["weather"]["active"].size() == 1
+		and snap["pending_offer"] == null and ruina_ids.size() == 1,
+		"factorías %d, cells %s, oferta %s" % [a.factoryArray.size(), str(snap["cells"]), str(snap["pending_offer"])]);
+
+	# --- (2) La ida y vuelta EN MEMORIA, sin pasar por JSON: capturar → _continue_game() en un
+	# Main nuevo → capturar. Aquí la igualdad tiene que ser `==` exacto, tipos incluidos (en
+	# GDScript `{"a": 1} == {"a": 1.0}` es false), así que esto prueba además que snapshot() y
+	# restore() fijan el mismo tipo a cada campo.
+	var b = _main_para_reanudar(fd);
+	var reanudada = b._continue_game(snap);
+	b.weatherManager.log_events = false;
+	var snap_b = b._capture_run();
+	_check("_continue_game() reanuda (devuelve true)", reanudada);
+	_check("ida y vuelta en memoria: la captura de la run restaurada es IDÉNTICA (==) a la original",
+		_sin_run_id(snap) == _sin_run_id(snap_b), _primera_diferencia(_sin_run_id(snap), _sin_run_id(snap_b)));
+	_check("la reanudada es una run NUEVA para la analítica (otro run_id)",
+		b.analytics.has_run() and snap_b["resumed_from"] != snap["resumed_from"]);
+
+	# --- (3) Un almacén, no dos: apply_map() sin storage_ctx no construye el suyo.
+	_check("hay UN almacén y no dos, y tantas factorías como en el snapshot",
+		_cuenta_tipo(b, "Storage") == 1 and b.factoryArray.size() == snap["factories"].size(),
+		"almacenes %d, factorías %d" % [_cuenta_tipo(b, "Storage"), b.factoryArray.size()]);
+	var hijas = 0;
+	for hijo in b.get_children():
+		if hijo.has_signal("resource_produced"):
+			hijas += 1;
+	_check("ni una factoría huérfana colgando de Main fuera del factoryArray", hijas == b.factoryArray.size(),
+		"%d hijas, %d en el array" % [hijas, b.factoryArray.size()]);
+	var conectadas = true;
+	for f in b.factoryArray:
+		if f.resource_produced.get_connections().size() != 1:
+			conectadas = false;
+	_check("cada factoría restaurada —almacén incluido— tiene su resource_produced conectado una vez", conectadas);
+	_check("la contaminación de partida no se suma a la guardada (restore() va después de apply_map())",
+		b.pollutionManager.total_pollution == a.pollutionManager.total_pollution
+		and b.pollutionManager.pollution_per_cell.size() == a.pollutionManager.pollution_per_cell.size());
+	_check("las mutaciones del mapa vuelven: la toxic teñida y la ruina sin tipo",
+		b.get_node("TileMap").cell_types == a.get_node("TileMap").cell_types);
+	_check("los workers son los guardados, no los que build() repartió por orden de llegada",
+		b.get_node("Player/Bag").workers_assigned == bolsa_a.workers_assigned
+		and b._get_factory_at_cell(Vector2i(7, 6)).workers_assigned == cortadora.workers_assigned);
+	_check("el clima sigue: mismo evento, misma cuenta atrás y el RNG en la misma tirada",
+		b.weatherManager.active.size() == 1 and b.weatherManager.active[0].rect == Rect2i(2, 3, 3, 2)
+		and b.weatherManager._rng.state == a.weatherManager._rng.state);
+
+	# --- (4) La misma ida y vuelta pasando por JSON, que es lo que M3 leerá del disco: todo número
+	# vuelve como float, así que esto prueba los int() de cada restore(). Se compara con la
+	# tolerancia de M1 (el JSON de Godot pierde hasta 1 ulp), y los tipos se miran aparte.
+	var texto = JSON.stringify(snap, "", true, true);
+	var c = _main_para_reanudar(fd);
+	var desde_json = c._continue_game(JSON.parse_string(texto));
+	c.weatherManager.log_events = false;
+	var snap_c = c._capture_run();
+	_check("ida y vuelta por JSON: la captura de la restaurada coincide con la original (números por valor)",
+		desde_json and _json_igual(_sin_run_id(snap), _sin_run_id(snap_c)),
+		_primera_diferencia(_sin_run_id(snap), _sin_run_id(snap_c)));
+	var cortadora_c = c._get_factory_at_cell(Vector2i(7, 6));
+	_check("desde JSON los contadores vuelven como int, no como float",
+		typeof(cortadora_c.timer) == TYPE_INT and typeof(cortadora_c.workers_assigned) == TYPE_INT
+		and typeof(c._get_factory_at_cell(Vector2i(10, 6)).output_buffer) == TYPE_INT
+		and typeof(c._get_factory_at_cell(Vector2i(10, 6)).input_buffer["wood"]) == TYPE_INT
+		and typeof(c.get_node("Player/Bag").bag["wood"]["quantity"]) == TYPE_INT
+		and typeof(c.gameManager.current_checkpoint_index) == TYPE_INT
+		and typeof(c.get_node("Player").speedModifiers["WoodCutter"]) == TYPE_INT);
+	_check("desde JSON el estado del RNG del clima vuelve exacto (64 bits, vía String)",
+		c.weatherManager._rng.state == a.weatherManager._rng.state);
+	_check("desde JSON la celda de emisión del almacén vuelve como Vector2i",
+		c._get_factory_at_cell(Vector2i(13, 8)).emit_route_cell == Vector2i(12, 8));
+
+	# --- (5) La restaurada cierra el siguiente checkpoint IGUAL que la original: misma bolsa,
+	# mismo update() y el mismo resultado —tier, cociente del tramo, cobro, índice—. Las cartas
+	# ofrecidas se barajan con el RNG global, así que de la oferta solo se compara la forma.
+	for m in [a, b]:
+		var bolsa = m.get_node("Player").get_node("Bag");
+		for material in ["wood", "plank", "stone"]:
+			bolsa.addToBag(material, 200);
+		m.gameManager.update(bolsa, m.pollutionManager);
+	var tras_a = a._capture_run();
+	var tras_b = b._capture_run();
+	_check("las dos cierran el checkpoint 1 (precondición)",
+		a.gameManager.current_checkpoint_index == 1 and b.gameManager.current_checkpoint_index == 1,
+		"%d / %d" % [a.gameManager.current_checkpoint_index, b.gameManager.current_checkpoint_index]);
+	_check("y lo cierran igual: gameManager, bolsa, Player y factorías idénticos tras el cierre",
+		tras_a["game"] == tras_b["game"] and tras_a["bag"] == tras_b["bag"]
+		and tras_a["player"] == tras_b["player"] and tras_a["factories"] == tras_b["factories"],
+		_primera_diferencia(tras_a["game"], tras_b["game"]));
+	_check("mismo tier y mismo cociente del tramo",
+		a.gameManager.last_tier == b.gameManager.last_tier
+		and a.gameManager.last_segment_rate == b.gameManager.last_segment_rate);
+
+	# --- (6) Una captura CON oferta pendiente reabre UpgradeScreen con los mismos ids. La de la
+	# original es la del checkpoint que acaba de cerrar.
+	var oferta = tras_a["pending_offer"];
+	_check("la original tiene la oferta del checkpoint en pantalla (precondición)",
+		oferta is Dictionary and oferta["source"] == "checkpoint" and oferta["ids"].size() > 0, str(oferta));
+	var d = _main_para_reanudar(fd);
+	d._continue_game(tras_a);
+	d.weatherManager.log_events = false;
+	var pantalla = d.get_node_or_null("UpgradeScreen");
+	_check("reanudar con oferta pendiente reabre UpgradeScreen con los MISMOS ids, sin re-barajar",
+		pantalla != null and d._offer_ids == oferta["ids"] and d._offer_source == "checkpoint",
+		"%s vs %s" % [str(d._offer_ids), str(oferta["ids"])]);
+	var textos = _textos_de(pantalla) if pantalla != null else [];
+	var nombres = true;
+	for id in oferta["ids"]:
+		if not textos.has(String(fd["Upgrades"][id].get("name", id))):
+			nombres = false;
+	_check("y la pantalla pinta esas cartas", nombres, str(textos));
+	_check("con el árbol pausado y el gameManager parado, como la original",
+		paused and d.gameManager.active == false and a.gameManager.active == false);
+	_check("y su captura es idéntica a la de la original, oferta incluida",
+		_sin_run_id(tras_a) == _sin_run_id(d._capture_run()),
+		_primera_diferencia(_sin_run_id(tras_a), _sin_run_id(d._capture_run())));
+	# --- (6b) El HUD de detrás de la oferta ya está pintado. Con la oferta pendiente el árbol se
+	# pausa antes de que _process() corra un solo frame, y sin _paint_hud() quedaba el texto de
+	# relleno de Main.tscn («Objective: 2 wood»): visto con ventana, no con la suite. Aquí se
+	# simula la ventana —render_enabled y los dos Label— porque en headless no se pinta nada.
+	var h = _main_para_reanudar(fd);
+	h.render_enabled = true;
+	for nombre in ["Label", "Objective"]:
+		var l = Label.new();
+		l.name = nombre;
+		l.text = "relleno";
+		h.add_child(l);
+	h._continue_game(tras_a);
+	h.weatherManager.log_events = false;
+	var hud_bag = h.get_node("Player").get_node("Bag");
+	_check("reanudar con oferta pendiente deja el HUD pintado con la run, no con el relleno",
+		h.get_node("Label").text == h._buildResourceText(hud_bag)
+			and h.get_node("Objective").text == h.gameManager.getObjectiveText(hud_bag, h.pollutionManager)
+			and h.get_node("Objective").text != "relleno",
+		"%s | %s" % [h.get_node("Objective").text, h.get_node("Label").text.left(40)]);
+	# Se apaga para que no siga pintando con los frames que le queden a la suite, como los otros
+	# Main de este bloque, que tampoco se liberan.
+	h.render_enabled = false;
+	# Elegir en la reanudada desbloquea la run como en cualquier otra.
+	d._on_upgrade_chosen(oferta["ids"][0]);
+	_check("elegir una carta en la reanudada despausa y reactiva el gameManager",
+		not paused and d.gameManager.active);
+
+	paused = false;
+	for m in [a, b, c, d]:
+		_limpiar([m.placer, m.mapLoader, m]);
+
+# La primera ruta en la que dos valores difieren, para que un rojo de la ida y vuelta diga QUÉ
+# campo falta en snapshot() o restore() en vez de solo «no es igual». Estricto con los tipos,
+# como el `==` de GDScript.
+func _primera_diferencia(x, y, ruta = "") -> String:
+	if typeof(x) != typeof(y):
+		return "%s: %s (%s) vs %s (%s)" % [ruta, str(x), type_string(typeof(x)), str(y), type_string(typeof(y))];
+	if x is Dictionary:
+		for k in x:
+			if not y.has(k):
+				return "%s/%s: falta en la segunda" % [ruta, str(k)];
+			var r = _primera_diferencia(x[k], y[k], "%s/%s" % [ruta, str(k)]);
+			if r != "":
+				return r;
+		for k in y:
+			if not x.has(k):
+				return "%s/%s: sobra en la segunda" % [ruta, str(k)];
+		return "";
+	if x is Array:
+		if x.size() != y.size():
+			return "%s: longitud %d vs %d" % [ruta, x.size(), y.size()];
+		for i in x.size():
+			var r = _primera_diferencia(x[i], y[i], "%s[%d]" % [ruta, i]);
+			if r != "":
+				return r;
+		return "";
+	return "" if x == y else "%s: %s vs %s" % [ruta, str(x), str(y)];
+
+# ---------- Serialización M3: el fichero y su ciclo de vida ----------
+
+# Si existe y con qué contenido, como _huella_del_save() pero para cualquier ruta.
+func _huella_de(ruta):
+	if not FileAccess.file_exists(ruta):
+		return "<no existe>";
+	return FileAccess.get_file_as_string(ruta);
+
+func _escribe_texto(ruta, texto):
+	var f = FileAccess.open(ruta, FileAccess.WRITE);
+	f.store_string(texto);
+	f.close();
+
+func _test_serializacion_m3(file_data):
+	print("Serialización M3 — el fichero y su ciclo de vida");
+	var run_save = load("res://managers/runSave.gd");
+	var fd = file_data.duplicate(true);
+	fd["Maps"] = [_mapa_por_id(file_data, "forest_01")];
+
+	# --- (1) La redirección: todo Main de la suite —por cualquiera de sus tres montajes— apunta
+	# al fichero de pruebas, y no al real.
+	var suelto = _new_main_de_prueba(file_data);
+	var en_arbol = _new_main_en_arbol(file_data);
+	var a = _main_para_reanudar(fd);
+	_check("todo Main de la suite escribe en user://test_run.json, nunca en RUN_PATH",
+		suelto.runSave.path == "user://test_run.json" and en_arbol.runSave.path == "user://test_run.json"
+		and a.runSave.path == "user://test_run.json" and run_save.RUN_PATH == "user://run.json",
+		"%s / %s / %s" % [suelto.runSave.path, en_arbol.runSave.path, a.runSave.path]);
+	_limpiar([suelto, en_arbol]);
+	var rs = a.runSave;
+	rs.clear();
+	var ruta = rs.path;
+
+	# --- (2) Escribir y leer: una run de verdad con cadena, cinta y una toxic, por disco.
+	a._start_game("standard");
+	a.weatherManager.log_events = false;
+	a._on_factory_chosen("WoodCutter", Vector2i(7, 6));
+	a._on_factory_chosen("WoodProcessing", Vector2i(10, 6));
+	a.beltNetwork.place_drag(Vector2i(7, 6), Vector2i(10, 6), a.factoryArray);
+	a._apply_map_downside({"cells": 1, "type": "toxic"});
+	a.gameManager.run_time = 12.75;
+	var snap = a._capture_run();
+	var huella_params = a._params_hash;
+	_check("sin fichero: read_valid() da {} y exists_valid() false",
+		rs.read_valid(huella_params).is_empty() and not rs.exists_valid(huella_params));
+	_check("write() escribe y no deja el .tmp a la vista",
+		rs.write(snap) and FileAccess.file_exists(ruta) and not FileAccess.file_exists(ruta + ".tmp"));
+	_check("y escribir encima de un save que ya existe también vale (el rename pisa)",
+		rs.write(snap) and FileAccess.file_exists(ruta) and not FileAccess.file_exists(ruta + ".tmp"));
+	_check("exists_valid() lo reconoce", rs.exists_valid(huella_params));
+	var leido = rs.read_valid(huella_params);
+	_check("read_valid() devuelve el snapshot escrito (números por valor)",
+		_json_igual(snap, leido), _primera_diferencia(snap, leido));
+	_check("sin reordenar claves: la bolsa vuelve en el orden del HUD",
+		not leido.is_empty() and Array(leido["bag"]["bag"].keys()) == Array(snap["bag"]["bag"].keys()),
+		"%s vs %s" % [str(snap["bag"]["bag"].keys()), str(leido["bag"]["bag"].keys()) if not leido.is_empty() else "{}"]);
+	_check("con precisión completa: el run_time vuelve exacto", not leido.is_empty()
+		and float(leido["game"]["run_time"]) == float(snap["game"]["run_time"]));
+	_check("un save válido NO se borra al leerlo: lo borra quien lo restaura", FileAccess.file_exists(ruta));
+
+	# --- (3) Los saves que no valen: se tiran sin petar. exists_valid() solo mira; read_valid() borra.
+	var texto = JSON.stringify(snap, "", false, true);
+	var otra_version = snap.duplicate(true);
+	otra_version["version"] = 0;
+	var otro_balance = snap.duplicate(true);
+	otro_balance["params_hash"] = "otro" + huella_params;
+	var malos = {
+		"version 0": JSON.stringify(otra_version),
+		"otro params_hash": JSON.stringify(otro_balance),
+		"JSON truncado": texto.substr(0, texto.length() / 2),
+		"JSON que no es un objeto": "[1, 2, 3]",
+		"sin version": "{\"params_hash\": \"%s\"}" % huella_params,
+	};
+	for caso in malos:
+		_escribe_texto(ruta, malos[caso]);
+		var visto = rs.exists_valid(huella_params);
+		var sigue = FileAccess.file_exists(ruta);
+		var r = rs.read_valid(huella_params);
+		_check("%s: exists_valid() false sin borrar, read_valid() {} y BORRA" % caso,
+			not visto and sigue and r.is_empty() and not FileAccess.file_exists(ruta),
+			"visto %s, seguía %s, leído %d claves, existe %s" % [visto, sigue, r.size(), FileAccess.file_exists(ruta)]);
+
+	# --- (4) Ganar, perder y reiniciar borran run.json y NI UN BYTE de save.json. El saveManager
+	# es uno que no escribe, para no tocar la meta-progresión real; si el borrado de run.json
+	# arrastrara a save.json por otro camino, la huella lo vería.
+	var sm = SaveSinDisco.new();
+	a.saveManager = sm;
+	var stats = {"time": 125.0, "checkpoints": 2, "factories_placed": 0, "final_pollution": 10};
+	var antes = _huella_del_save();
+	rs.write(snap);
+	a._on_run_won(stats.duplicate());
+	_check("ganar borra run.json", not FileAccess.file_exists(ruta));
+	_check("y deja save.json idéntico", _huella_del_save() == antes, "la huella cambió");
+	_check("sin dejar de registrar la victoria en la meta-progresión",
+		sm.get_runs_completed() == 1 and sm.guardados > 0, "runs %d" % sm.get_runs_completed());
+	paused = false;
+	var runs_antes = sm.get_runs_completed();
+	var guardados_antes = sm.guardados;
+	rs.write(snap);
+	a._close_lost_run(stats.duplicate());
+	_check("perder borra run.json", not FileAccess.file_exists(ruta));
+	_check("y deja save.json idéntico", _huella_del_save() == antes, "la huella cambió");
+	_check("sin pedirle nada al saveManager (perder no es progresión)",
+		sm.get_runs_completed() == runs_antes and sm.guardados == guardados_antes);
+	rs.write(snap);
+	a.reset();
+	_check("reset() borra run.json", not FileAccess.file_exists(ruta));
+	_check("y deja save.json idéntico", _huella_del_save() == antes, "la huella cambió");
+
+	# --- (5) Continuar desde el fichero: restaura y borra (paso 12). Con un save inválido no
+	# monta nada y el fichero se va igual.
+	var b = _main_para_reanudar(fd);
+	rs.write(snap);
+	b.runSave.path = ruta;
+	var siguio = b._continue_from_file();
+	_check("_continue_from_file() reanuda la run del fichero",
+		siguio and b.gameManager != null and b.factoryArray.size() == snap["factories"].size(),
+		"factorías %d vs %d" % [b.factoryArray.size(), snap["factories"].size()]);
+	_check("y borra run.json tras restaurar: reanudar no es rebobinar", not FileAccess.file_exists(ruta));
+	if b.weatherManager:
+		b.weatherManager.log_events = false;
+	var c = _main_para_reanudar(fd);
+	_escribe_texto(ruta, texto.substr(0, 20));
+	_check("con un save roto, _continue_from_file() da false sin montar nada y lo borra",
+		not c._continue_from_file() and c.gameManager == null and not FileAccess.file_exists(ruta));
+
+	rs.clear();
+	paused = false;
+	for m in [a, b, c]:
+		_limpiar([m.placer, m.mapLoader, m] if m.placer != null else [m.mapLoader, m]);
+
+# ---------- Serialización M4: autoguardado, cierre y analítica ----------
+
+# Con el `sink` de prueba de los bloques «Analítica M*» y `_filas_de()` de Analítica M2. El
+# cierre de la ventana se prueba llamando a `_on_app_closing()`: la suite no tiene clave de
+# Augur, así que `Augur.closing` no se emite nunca y la atadura no se puede disparar.
+func _test_serializacion_m4(file_data):
+	print("Serialización M4 — autoguardado, cierre y analítica");
+	var fd = file_data.duplicate(true);
+	fd["Maps"] = [_mapa_por_id(file_data, "forest_01")];
+	var tecla_r = InputEventKey.new();
+	tecla_r.keycode = KEY_R;
+	tecla_r.pressed = true;
+
+	# --- (1) Sin run viva: _save_run() da false y no escribe; la R no reinicia ni borra.
+	var vacio = _main_para_reanudar(fd);
+	var rs = vacio.runSave;
+	var ruta = rs.path;
+	rs.clear();
+	_check("sin run montada _save_run() da false y no escribe nada",
+		not vacio._save_run() and not FileAccess.file_exists(ruta));
+	var recibidos = [];
+	vacio.analytics.sink = func(n, p): recibidos.append([n, p]);
+	vacio._on_app_closing();
+	_check("y _on_app_closing() sin run viva no manda nada", recibidos.is_empty(), str(recibidos));
+	_escribe_texto(ruta, "{\"version\": 1}");
+	vacio._unhandled_input(tecla_r);
+	_check("la R en el menú, sin run, no borra la run guardada ni abre el package_select",
+		FileAccess.file_exists(ruta) and vacio.get_node_or_null("PackageSelect") == null
+		and recibidos.is_empty(), str(_nombres_de(recibidos)));
+	rs.clear();
+
+	# --- (2) El autoguardado: 20 s de _tick_world() escriben; 19 no; con el árbol pausado no.
+	var a = _main_para_reanudar(fd);
+	a._start_game("standard");
+	a.weatherManager.log_events = false;
+	a._on_factory_chosen("WoodCutter", Vector2i(7, 6));
+	var tm = a.get_node("TileMap");
+	rs.clear();
+	_check("una run recién montada arranca el reloj del autoguardado en 0", a._autosave_t == 0.0);
+	for i in 19:
+		a._tick_world(tm, 1.0);
+	_check("19 s de _tick_world() no escriben todavía", not FileAccess.file_exists(ruta));
+	a._tick_world(tm, 1.0);
+	_check("a los 20 s _tick_world() escribe run.json", FileAccess.file_exists(ruta));
+	var leido = rs.read_valid(a._params_hash);
+	_check("con la run en curso: su mapa, su factoría y el run_id vivo como resumed_from",
+		not leido.is_empty() and leido.get("map_id") == a._run_map_id
+		and leido.get("factories", []).size() == a.factoryArray.size()
+		and leido.get("resumed_from") == a.analytics.run_id(), str(leido.keys()));
+	_check("y el reloj vuelve a 0", a._autosave_t == 0.0, str(a._autosave_t));
+	rs.clear();
+	paused = true;
+	for i in 25:
+		a._tick_world(tm, 1.0);
+	var en_pausa = FileAccess.file_exists(ruta);
+	var t_pausa = a._autosave_t;
+	paused = false;
+	_check("con el árbol pausado 25 s de _tick_world() no escriben ni acumulan",
+		not en_pausa and t_pausa == 0.0, "existe %s, t %s" % [en_pausa, t_pausa]);
+
+	# --- (3) Con la oferta de cartas abierta SÍ guarda, con la oferta dentro.
+	var oferta = ["speed_woodcutter", "more_workers", "extra_wood"];
+	a.gameManager.checkpoint_reached.emit(oferta, {}, []);
+	var guardo_oferta = a._save_run();
+	var con_oferta = rs.read_valid(a._params_hash);
+	var po = con_oferta.get("pending_offer", null);
+	_check("con UpgradeScreen abierta _save_run() escribe y lleva pending_offer",
+		guardo_oferta and po is Dictionary and Array(po.get("ids", [])) == oferta, str(po));
+	a.get_node("UpgradeScreen")._on_upgrade_chosen("more_workers");
+	paused = false;
+	rs.clear();
+
+	# --- (4) Cerrar con Augur: _on_app_closing() con run viva escribe y manda run_end suspend.
+	recibidos = [];
+	a.analytics.sink = func(n, p): recibidos.append([n, p]);
+	var id_cerrada = a.analytics.run_id();
+	a._on_app_closing();
+	var fin = _filas_de(recibidos, "run_end");
+	_check("_on_app_closing() con run viva escribe run.json", FileAccess.file_exists(ruta));
+	_check("y manda UN run_end con result suspend y el run_id de la run",
+		fin.size() == 1 and fin[0].get("result") == "suspend" and fin[0].get("run_id") == id_cerrada
+		and not a.analytics.has_run(), str(fin));
+	var snap = rs.read_valid(a._params_hash);
+	_check("el fichero cita esa misma run como resumed_from", snap.get("resumed_from", "") == id_cerrada);
+	recibidos.clear();
+	a._on_app_closing();
+	_check("un segundo cierre (la notificación tras el closing) vuelve a escribir y no manda nada",
+		recibidos.is_empty() and FileAccess.file_exists(ruta), str(recibidos));
+	rs.clear();
+	a._notification(Node.NOTIFICATION_WM_CLOSE_REQUEST);
+	_check("sin Augur, la notificación de cierre de Main escribe run.json", FileAccess.file_exists(ruta));
+	rs.clear();
+
+	# --- (5) Continuar manda run_start con resumed_from y un run_id nuevo; una run nueva, sin él.
+	var b = _main_para_reanudar(fd);
+	var de_b = [];
+	b.analytics.sink = func(n, p): de_b.append([n, p]);
+	b._continue_game(snap);
+	if b.weatherManager:
+		b.weatherManager.log_events = false;
+	var rs_b = _filas_de(de_b, "run_start");
+	_check("_continue_game() manda run_start con resumed_from = el run_id de la suspendida",
+		rs_b.size() == 1 and rs_b[0].get("resumed_from") == id_cerrada, str(rs_b));
+	_check("y abre un run_id NUEVO", rs_b.size() == 1 and rs_b[0].get("run_id", "") != id_cerrada
+		and String(rs_b[0].get("run_id", "")).length() == 8);
+	_check("la run reanudada arranca su reloj de autoguardado en 0", b._autosave_t == 0.0);
+	var c = _main_para_reanudar(fd);
+	var de_c = [];
+	c.analytics.sink = func(n, p): de_c.append([n, p]);
+	c._start_game("standard");
+	if c.weatherManager:
+		c.weatherManager.log_events = false;
+	var rs_c = _filas_de(de_c, "run_start");
+	_check("una run nueva manda run_start SIN resumed_from",
+		rs_c.size() == 1 and not rs_c[0].has("resumed_from"), str(rs_c));
+	# Un resumed_from estropeado (viene de disco) no puede tumbar el run_start entero.
+	var d = _main_para_reanudar(fd);
+	var de_d = [];
+	d.analytics.sink = func(n, p): de_d.append([n, p]);
+	var roto = snap.duplicate(true);
+	roto["resumed_from"] = "no-es-un-id";
+	d._continue_game(roto);
+	if d.weatherManager:
+		d.weatherManager.log_events = false;
+	var rs_d = _filas_de(de_d, "run_start");
+	_check("con un resumed_from que no es id, run_start sale igual, sin él",
+		rs_d.size() == 1 and not rs_d[0].has("resumed_from"), str(rs_d));
+	_check("el catálogo admite suspend como resultado y resumed_from en run_start",
+		b.analytics.enums["result"].has("suspend")
+		and b.analytics.events["run_start"]["props"].get("resumed_from", {}).get("type", "") == "id");
+
+	# --- (6) Ganada la run, el resumen la da por terminada: ni autoguardado ni cierre guardan.
+	b.saveManager = SaveSinDisco.new();
+	b._on_run_won({"time": 10.0, "checkpoints": 1, "factories_placed": 0, "final_pollution": 0});
+	de_b.clear();
+	var guardo_ganada = b._save_run();
+	b._on_app_closing();
+	_check("con el RunSummary abierto _save_run() da false, no escribe y el cierre no manda nada",
+		not guardo_ganada and not FileAccess.file_exists(ruta) and _filas_de(de_b, "run_end").is_empty(),
+		str(_nombres_de(de_b)));
+	paused = false;
+
+	# --- (7) La R con run viva sigue reiniciando y borrando el save.
+	rs.write(snap);
+	c._unhandled_input(tecla_r);
+	_check("la R con run viva reinicia (package_select) y borra run.json",
+		c.gameManager == null and c.get_node_or_null("PackageSelect") != null
+		and not FileAccess.file_exists(ruta));
+
+	rs.clear();
+	paused = false;
+	for m in [vacio, a, b, c, d]:
+		_limpiar([m.placer, m.mapLoader, m] if m.placer != null else [m.mapLoader, m]);
+
+# ---------- Serialización M5: el botón «Continuar» ----------
+
+# El menú se monta como lo monta Main: _show_main_menu() sobre un Main en el árbol, con el
+# fichero de pruebas (user://test_run.json) delante o no. El ConfirmationDialog no se muestra:
+# se emite su `confirmed`/`canceled`, que es lo que hacen sus botones.
+func _menu_de(main):
+	var viejo = main.get_node_or_null("MainMenu");
+	if viejo != null:
+		main.remove_child(viejo);
+		viejo.free();
+	main._show_main_menu();
+	return main.get_node("MainMenu");
+
+func _test_serializacion_m5(file_data):
+	print("Serialización M5 — el botón «Continuar»");
+	var fd = file_data.duplicate(true);
+	fd["Maps"] = [_mapa_por_id(file_data, "forest_01")];
+	var menu_script = load("res://ui/mainMenu.gd");
+
+	# Un snapshot de verdad, de una run montada con una factoría.
+	var a = _main_para_reanudar(fd);
+	a._start_game("standard");
+	a._on_factory_chosen("WoodCutter", Vector2i(7, 6));
+	var snap = a._capture_run();
+	var rs = a.runSave;
+	var ruta = rs.path;
+	rs.clear();
+
+	# --- (1) Sin save no aparece; con uno de otro params_hash tampoco (y no se borra al mirar).
+	var b = _main_para_reanudar(fd);
+	var m = _menu_de(b);
+	_check("sin run guardada el menú no tiene «CONTINUAR»",
+		_boton_con_texto(m, "CONTINUAR") == null and m.continue_button == null);
+	var ajeno = snap.duplicate(true);
+	ajeno["params_hash"] = "otro_balance";
+	rs.write(ajeno);
+	m = _menu_de(b);
+	_check("con un save de otro params_hash tampoco", _boton_con_texto(m, "CONTINUAR") == null);
+	_check("y pintar el menú no lo borra (exists_valid solo mira)", FileAccess.file_exists(ruta));
+	rs.clear();
+
+	# --- (2) Con save válido: «CONTINUAR» encima de «JUGAR», mismo tamaño.
+	rs.write(snap);
+	m = _menu_de(b);
+	var cont = _boton_con_texto(m, "CONTINUAR");
+	var jugar = _boton_con_texto(m, "JUGAR");
+	_check("con run guardada aparece «CONTINUAR»", cont != null and cont == m.continue_button);
+	_check("justo encima de «JUGAR» y con su mismo tamaño (240×56)",
+		cont != null and jugar != null and cont.get_parent() == jugar.get_parent()
+		and cont.get_index() == jugar.get_index() - 1
+		and cont.custom_minimum_size == Vector2(240, 56)
+		and cont.custom_minimum_size == jugar.custom_minimum_size);
+	_check("Main cablea continue_pressed y play_pressed del menú",
+		_conectada(m, "continue_pressed", b, "_on_menu_continue")
+		and _conectada(m, "play_pressed", b, "_on_menu_play"));
+
+	# --- (3) «JUGAR» con save pide confirmación; «Cancelar» deja todo como estaba.
+	var jugadas = [0];
+	m.play_pressed.connect(func(): jugadas[0] += 1);
+	jugar.pressed.emit();
+	var dlg = m.confirm_dialog;
+	_check("«JUGAR» con save abre un ConfirmationDialog y no emite play_pressed todavía",
+		dlg is ConfirmationDialog and dlg.get_parent() == m and jugadas[0] == 0
+		and not m.is_queued_for_deletion());
+	_check("con sus textos: «Hay una run guardada. Empezar otra la borra.» / «Empezar nueva» / «Cancelar»",
+		dlg != null and dlg.dialog_text == "Hay una run guardada. Empezar otra la borra."
+		and dlg.ok_button_text == "Empezar nueva" and dlg.cancel_button_text == "Cancelar");
+	if dlg != null:
+		dlg.canceled.emit();
+	_check("«Cancelar» no emite, no borra y deja el menú vivo",
+		jugadas[0] == 0 and FileAccess.file_exists(ruta) and not m.is_queued_for_deletion()
+		and b.get_node_or_null("PackageSelect") == null);
+
+	# --- (4) «Empezar nueva»: borra run.json ANTES de ir a packageSelect.
+	var habia_al_abrir = [null];
+	b.child_entered_tree.connect(func(n):
+		if n.name == "PackageSelect":
+			habia_al_abrir[0] = FileAccess.file_exists(ruta), CONNECT_ONE_SHOT);
+	if dlg != null:
+		dlg.confirmed.emit();
+	_check("«Empezar nueva» emite play_pressed y libera el menú",
+		jugadas[0] == 1 and m.is_queued_for_deletion());
+	_check("y Main borra run.json antes de montar el packageSelect",
+		b.get_node_or_null("PackageSelect") != null and habia_al_abrir[0] == false
+		and not FileAccess.file_exists(ruta), str(habia_al_abrir[0]));
+	var ps = b.get_node_or_null("PackageSelect");
+	if ps != null:
+		b.remove_child(ps);
+		ps.free();
+
+	# --- (5) Sin save, «JUGAR» va directo (sin diálogo), como siempre.
+	var sin = menu_script.new();
+	sin.initialize(null, false, false);
+	var directas = [0];
+	sin.play_pressed.connect(func(): directas[0] += 1);
+	_boton_con_texto(sin, "JUGAR").pressed.emit();
+	_check("sin save «JUGAR» emite play_pressed sin diálogo",
+		directas[0] == 1 and sin.confirm_dialog == null and sin.is_queued_for_deletion());
+	sin.free();
+
+	# --- (6) «CONTINUAR» reanuda la run del fichero, libera el menú y borra el save.
+	var c = _main_para_reanudar(fd);
+	rs.write(snap);
+	m = _menu_de(c);
+	_boton_con_texto(m, "CONTINUAR").pressed.emit();
+	if c.weatherManager:
+		c.weatherManager.log_events = false;
+	_check("«CONTINUAR» reanuda la run guardada y libera el menú",
+		c.gameManager != null and c.factoryArray.size() == snap["factories"].size()
+		and m.is_queued_for_deletion() and c.get_node_or_null("PackageSelect") == null,
+		"factorías %d vs %d" % [c.factoryArray.size(), snap["factories"].size()]);
+	_check("y el save se borra al cargarlo", not FileAccess.file_exists(ruta));
+
+	# --- (7) Si el save se invalida entre el menú y el click, se cae a elegir paquete.
+	var d = _main_para_reanudar(fd);
+	rs.write(snap);
+	m = _menu_de(d);
+	_escribe_texto(ruta, "{roto");
+	_boton_con_texto(m, "CONTINUAR").pressed.emit();
+	_check("con el save roto al pulsar, «CONTINUAR» abre el packageSelect en vez de dejar negro",
+		d.gameManager == null and d.get_node_or_null("PackageSelect") != null
+		and not FileAccess.file_exists(ruta));
+
+	rs.clear();
+	paused = false;
+	for x in [a, b, c, d]:
+		_limpiar([x.placer, x.mapLoader, x] if x.placer != null else [x.mapLoader, x]);

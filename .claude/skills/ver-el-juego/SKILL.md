@@ -44,7 +44,7 @@ func _todo():
     root.add_child(main);
     var menu = main.get_node_or_null("MainMenu");
     if menu: main.remove_child(menu); menu.free();    # saltarse los menús
-    main._start_game("standard");
+    main._start_game("standard");    # con RunSave.default_path ya redirigido (trampa 6)
     # pick_map() es ALEATORIO: si necesitas un mapa concreto, reaplícalo entero
     # (demoliendo antes el almacén del mapa descartado). Receta literal en tools/ver_dilema.gd.
     await _capturar("res://capturas/foo.png");
@@ -58,7 +58,7 @@ func _capturar(ruta):
 `Engine.time_scale` **también vale con render**: a 40× la espiral de contaminación entera cabe en
 ~10 s reales.
 
-## Las cinco trampas
+## Las seis trampas
 
 1. 🔴 **Las pantallas no se buscan por nombre.** `ui/upgradeScreen.gd` extiende `CanvasLayer`, y en
    cuanto se apila más de una —`queue_free()` es diferido, y el juego alcanza sus **propios**
@@ -83,6 +83,16 @@ func _capturar(ruta):
    `.gitignore`; si escribes en otra carpeta, sácala del repo al terminar.
 5. **`--script` con ventana no lleva `--headless`.** Parece obvio y es el error más rápido de cometer
    copiando una línea de la sección de tests.
+6. 🔴 **Redirige `RunSave.default_path` ANTES de instanciar `Main.tscn`.** Desde el 2026-10-01
+   (Plan «Serialización de Run») `Main` guarda la run en `user://run.json` cada 20 s, y `reset()`,
+   ganar, perder y «Continuar» lo **borran**. El `user://` del conductor es el mismo que el del juego
+   de David: un conductor sin redirigir le pisa o le borra la run guardada. Primera línea del
+   conductor, como hace `tests/run_tests.gd:_ejecutar()`:
+
+   ```gdscript
+   const RunSave = preload("res://managers/runSave.gd");
+   RunSave.default_path = "user://ver_run.json";   # y bórralo al terminar
+   ```
 
 ## Mirar la captura
 

@@ -239,12 +239,25 @@ func _getFactoryAtCell(cell):
 # _evaluate_synergies() (que aplica) ni aplica-y-revierte (que arrastraría el pollution_mult
 # multiplicativo). Resuelve las mismas dos fuentes que resolvería colocar: el adjacency_bonus de
 # la casilla y las 8 vecinas.
+#
+# Y desde Legibilidad M2 (2026-09-23) las otras DOS cosas que la casilla le hace a lo que se
+# construye encima, que hasta entonces el jugador solo descubría después de pagar: el
+# `pollution_multiplier` del pantano (lo aplica build(), abajo) y el `on_build_pollution` de la
+# tierra quemada (lo aplica Main._on_factory_chosen()). Van en claves PROPIAS y no dentro de
+# `pollution_mult`, porque no son lo mismo aunque las dos multipliquen: aquél es un acumulador de
+# sinergia que se resetea y se recalcula al demoler una vecina, y éste muta el valor BASE
+# (`pollutionAmount`) una sola vez y para siempre. Mezclarlos haría que el radial anunciase como
+# «sinergia» algo que ninguna vecina concede y que no se va al quitarla.
 func preview_synergies(factory_type, cell, tile_map) -> Dictionary:
 	var preview = {
 		"tick_bonus": 0,
 		"output_bonus": 0,
 		"pollution_mult": 1.0,
 		"gives_to": 0,
+		# Neutros: 1.0 multiplica sin cambiar nada y 0.0 no ensucia. Una casilla normal los deja
+		# así y el radial no escribe ni una línea por ellos.
+		"tile_pollution_mult": 1.0,
+		"tile_on_build_pollution": 0.0,
 	};
 	# (1) El bonus del tipo de casilla, que build() aplica antes de mirar a ninguna vecina.
 	if tile_map != null:
@@ -252,6 +265,13 @@ func preview_synergies(factory_type, cell, tile_map) -> Dictionary:
 		if not tdef.is_empty():
 			var adj = tdef.get("adjacency_bonus", {});
 			_accumulate_preview(preview, adj.get(factory_type, adj.get("*", {})));
+			# Se LEEN del tdef, las mismas dos claves que leen build() y Main: si el JSON cambia
+			# el ×1.5 o el +10, el aviso cambia con él. Solo se copian —nada se aplica—, así que
+			# consultar sigue sin mover ni un número de la partida.
+			if tdef.has("pollution_multiplier"):
+				preview["tile_pollution_mult"] = float(tdef["pollution_multiplier"]);
+			if tdef.has("on_build_pollution"):
+				preview["tile_on_build_pollution"] = float(tdef["on_build_pollution"]);
 	# (2) Las vecinas, en los dos sentidos que _evaluate_synergies() resuelve al colocar: lo que
 	# cada una concedería a la nueva se suma al bonus, y lo que la nueva concedería a ellas se
 	# cuenta aparte — no es un número que esta factoría vaya a lucir, pero es la mitad del valor

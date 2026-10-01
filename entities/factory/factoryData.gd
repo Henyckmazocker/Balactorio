@@ -54,8 +54,9 @@ var emit_route_cell = null;
 const OUTPUT_BUFFER_MAX: int = 10;
 # POR QUÉ no está produciendo, para quien lo quiera pintar — el estado lo creó el M4 del
 # Plan - Cintas y Almacén y lo completa y dibuja el Plan - Feedback de Cuellos de Botella.
-# CINCO valores y en este orden de prioridad, que es el que fija ese plan: "" (produce),
-# "workers", "input", "output", "choke".
+# SEIS valores y en este orden de prioridad, que es el que fija ese plan: "" (produce),
+# "workers", "storm", "input", "output", "choke". "storm" lo intercala el M3 del Plan - Eventos
+# Climáticos: una tormenta sobre la casilla para a las de producción (ver update()).
 # El quinto, el ahogo, lo añadió el M1 de ese plan. M4 lo dejó a propósito sin escribir
 # —declarar un valor que diseñaba otro plan era decidir por él— y hasta entonces un tick
 # ahogado dejaba `blocked_reason` en "": no había forma de distinguir «va lenta porque el
@@ -199,6 +200,33 @@ func _pollutionManager():
 	_pollution_manager = get_tree().get_root().find_child("PollutionManager", true, false);
 	return _pollution_manager;
 
+# Multiplicador del clima sobre la celda de la factoría; 1.0 si no hay WeatherManager. Es un
+# HERMANO directo, igual que la red de cintas (ver _beltNetwork(), abajo) y por lo mismo: sin
+# find_child() —devolvería el primero del árbol y rompería los escenarios en serie de la
+# suite— y sin cachear —una referencia guardada sobreviviría a Main.reset(), que lo suelta—.
+# Una factoría suelta (la suite) no tiene manager y se comporta exactamente como antes.
+func _weatherMultiplier() -> float:
+	var padre = get_parent();
+	if padre == null:
+		return 1.0;
+	var wm = padre.get_node_or_null("WeatherManager");
+	if wm == null:
+		return 1.0;
+	return wm.getMultiplierAt(cell_position);
+
+# Si una tormenta (Eventos Climáticos M3) cubre la celda de la factoría. Mismo patrón que
+# _weatherMultiplier(): hermano directo por nombre, sin cachear, y sin manager no para nada —una
+# factoría suelta en la suite se comporta como antes—. La suspensión del plan B 1 la resuelve
+# el propio manager: haltsProductionAt() devuelve false con la ventana de punto muerto abierta.
+func _haltedByWeather() -> bool:
+	var padre = get_parent();
+	if padre == null:
+		return false;
+	var wm = padre.get_node_or_null("WeatherManager");
+	if wm == null:
+		return false;
+	return wm.haltsProductionAt(cell_position);
+
 # La red de cintas, que es de donde el almacén saca A QUIÉN alimenta cada una de sus cintas
 # (_tick_storage_emit()). Es un HERMANO directo —Main mete el manager con `add_child()` y le
 # pone el nombre "BeltNetwork", y las factorías cuelgan del mismo Main—, así que se pregunta por
@@ -223,15 +251,29 @@ func getRestorationScale():
 # _tick_storage() vuelca en ella lo que las cintas le han traído. Lo pasan _on_timer_timeout()
 # y todos los llamadores de fuera del juego.
 func update(_bag = null):
-	# La prioridad de las cinco razones, en este orden: workers -> input -> output -> choke. La
-	# fija el Plan - Feedback de Cuellos de Botella, que es quien las pinta; aquí solo se
-	# respeta. Los CINCO puntos de salida temprana escriben la suya y el camino de éxito la
-	# limpia: si uno se dejara sin escribir, el estado se quedaría congelado en el del tick
-	# anterior y el indicador del mapa mentiría hasta que la factoría cambiase de humor.
+	# La prioridad de las razones, en este orden: workers -> storm -> input -> output -> choke.
+	# La fija el Plan - Feedback de Cuellos de Botella, que es quien las pinta, y la tormenta la
+	# intercala el Plan - Eventos Climáticos (M3); aquí solo se respeta. Los SEIS puntos de
+	# salida temprana escriben la suya y el camino de éxito la limpia: si uno se dejara sin
+	# escribir, el estado se quedaría congelado en el del tick anterior y el indicador del mapa
+	# mentiría hasta que la factoría cambiase de humor.
 	# (El quinto es el "input" de la restauradora con insumos, Variedad M4: usa la razón que ya
 	# existía y NO cambia la prioridad — una depuradora sin workers sigue diciendo "workers".)
 	if not isActive():
 		blocked_reason = "workers";
+		return;
+	# La tormenta (Eventos Climáticos M3), SEGUNDA en la prioridad: workers -> storm -> input ->
+	# output -> choke. Va detrás de "workers" porque eso lo arregla el jugador con un botón y
+	# la tormenta no: decirle «espera» a una factoría sin gente le escondería lo único que sí
+	# puede hacer. Y va delante de las demás porque enmascara el arreglo: tenderle cinta a una
+	# factoría bajo tormenta no la haría producir.
+	# Es una PARADA externa y no una rampa, igual que el búfer lleno: sale antes de tocar
+	# `production_debt` (al escampar no suelta de golpe lo que «debió» producir), antes de
+	# consumeNeeds() (no se come el insumo) y antes de _apply_pollution() (no ensucia).
+	# Solo las de producción: la restauradora queda exenta por la misma promesa por la que no se
+	# ahoga —limpiar tiene que funcionar siempre— y el almacén no produce nada que parar.
+	if factory_type == "production" and _haltedByWeather():
+		blocked_reason = "storm";
 		return;
 	if factory_type == "restoration":
 		# Limpiar tiene que funcionar SIEMPRE. La restauración no produce material, así que no
@@ -498,6 +540,11 @@ func _apply_pollution(output_scale = 1.0):
 		return;
 	var effective = getEffectivePollution() * output_scale;
 	if effective >= 0:
+		# Clima (Plan «Eventos Climáticos», M2): la sequía se CONSULTA aquí, en cada tick que
+		# ensucia, y no se hornea en `pollutionAmount` como el ×1,5 del pantano en
+		# factoryPlacer.build(): horneada no caducaría y solo tocaría lo construido durante ella.
+		# Solo en esta rama, la de emisión positiva: una sequía no potencia a una restauradora.
+		effective *= _weatherMultiplier();
 		# Producción: ensucia solo su propia celda, como siempre.
 		pm.addPollution(effective, cell_position);
 	elif factory_type == "restoration":
@@ -545,3 +592,78 @@ func _on_timer_timeout():
 	timer += 1;
 	if int(timer) % int(getEffectiveTick()) == 0:
 		update(get_parent().get_node("Player").get_node("Bag"));
+
+
+# ---------- Serialización de Run (M1) ----------
+
+const RunSave = preload("res://managers/runSave.gd");
+
+# Lo que esta factoría tiene y build() NO reproduciría: al reanudar, build() la instancia con los
+# modificadores, workers y sinergias de AHORA, y la fase 2 de la restauración pisa todo esto
+# encima sin derivar nada (ver el plan). `timer` es el CONTADOR de segundos de _on_timer_timeout(),
+# no el nodo Timer de factory.tscn: su `time_left` se pierde a propósito (≤ 1 s por factoría).
+# Fuera: `blocked_reason` (lo re-deriva el primer update()) y lo que sale del JSON vía build()
+# —`itemNeeded`, `workers_needed`, `factory_type`, `production_candidates`—.
+#
+# Cada número sale con su tipo CANÓNICO y restore() fija el mismo (M2): el `==` de dos Dictionary
+# distingue 4 de 4.0, y sin esto la ida y vuelta no sería idéntica. `tickTimer` es float porque es
+# lo que build() le da (el `tick` del JSON llega como float) y `cost_paid` también, porque es una
+# copia del `cost` del JSON; los contadores —output, workers, timer, sinergias enteras, búferes—
+# son int.
+func snapshot() -> Dictionary:
+	var entrada = {};
+	for material in input_buffer:
+		entrada[String(material)] = int(input_buffer[material]);
+	var pagado = {};
+	for material in cost_paid:
+		pagado[String(material)] = float(cost_paid[material]);
+	return {
+		"type": type,
+		"cell": RunSave.cell_key(cell_position),
+		"production": production,
+		"tickTimer": float(tickTimer),
+		"outputAmount": int(outputAmount),
+		"pollutionAmount": float(pollutionAmount),
+		"workers_assigned": int(workers_assigned),
+		"production_debt": float(production_debt),
+		"timer": int(timer),
+		"synergy_tick_bonus": int(synergy_tick_bonus),
+		"synergy_output_bonus": int(synergy_output_bonus),
+		"synergy_pollution_mult": float(synergy_pollution_mult),
+		"input_buffer": entrada,
+		"output_buffer": int(output_buffer),
+		"cost_paid": pagado,
+		"emit_route_cell": RunSave.cell_key(emit_route_cell) if emit_route_cell != null else null,
+	};
+
+# Serialización de Run (M2): la FASE 2 de la restauración. Main ya ha instanciado esta factoría
+# con build() —que deriva tick, output, contaminación, workers y sinergias de lo que hay AHORA—, y
+# aquí se pisa todo lo guardado sin derivar nada: ni register_and_evaluate() ni
+# recompute_synergies() se llaman al reanudar, porque sobre un mapa a medio montar darían otros
+# números. `type`, `cell` y lo que sale del JSON (`itemNeeded`, `workers_needed`,
+# `factory_type`, `production_candidates`) ya los puso build(). `blocked_reason` lo re-deriva el
+# primer update(). int()/float() porque de JSON (M3) todo número vuelve como float.
+func restore(d: Dictionary) -> void:
+	production = d.get("production", production);
+	if production != null:
+		production = String(production);
+	tickTimer = float(d.get("tickTimer", tickTimer));
+	outputAmount = int(d.get("outputAmount", outputAmount));
+	pollutionAmount = float(d.get("pollutionAmount", pollutionAmount));
+	workers_assigned = int(d.get("workers_assigned", 0));
+	production_debt = float(d.get("production_debt", 0.0));
+	timer = int(d.get("timer", 0));
+	synergy_tick_bonus = int(d.get("synergy_tick_bonus", 0));
+	synergy_output_bonus = int(d.get("synergy_output_bonus", 0));
+	synergy_pollution_mult = float(d.get("synergy_pollution_mult", 1.0));
+	input_buffer = {};
+	var entrada = d.get("input_buffer", {});
+	for material in entrada:
+		input_buffer[String(material)] = int(entrada[material]);
+	output_buffer = int(d.get("output_buffer", 0));
+	cost_paid = {};
+	var pagado = d.get("cost_paid", {});
+	for material in pagado:
+		cost_paid[String(material)] = float(pagado[material]);
+	var ruta = d.get("emit_route_cell", null);
+	emit_route_cell = RunSave.parse_cell(String(ruta)) if ruta != null else null;

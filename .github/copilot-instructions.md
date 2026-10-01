@@ -21,7 +21,7 @@ Toda la documentación detallada del proyecto vive en la bóveda Obsidian fuera 
 ## Stack técnico
 
 - **Motor**: Godot 4.7 (Forward Plus), resolución 1280x720, escena principal `res://Main.tscn`
-- **Tests**: `godot-4 --headless --path . --script res://tests/run_tests.gd` (1023 comprobaciones, exit 0/1)
+- **Tests**: `godot-4 --headless --path . --script res://tests/run_tests.gd` (1458 comprobaciones, exit 0/1)
 - **Lenguaje**: GDScript (sin tipado estático por ahora)
 - **Datos del juego**: `resources/factoryParams.json` — iterable sin recompilar
 
@@ -40,15 +40,35 @@ managers/                      # Lógica de negocio; nodos hijos de Main, sin au
   gameManager.gd               # Checkpoints, objetivo doble, victoria y punto muerto
   mapLoader.gd                 # Paquete de inicio + selección y carga del mapa
   pollutionManager.gd          # Contaminación global y por casilla
+  weatherManager.gd            # Clima por zonas: efectos consultados, suspendido con punto muerto abierto (2026-09-30)
   saveManager.gd               # Meta-progresión en user://save.json
+  runSave.gd                   # Run en curso en user://run.json: snapshot()/restore() por clase, se borra al cargar/ganar/perder/reiniciar (2026-10-01)
   beltNetwork.gd               # Red de cintas indexada por celda; deliver() es el único camino
+  analytics.gd                 # Analítica de runs: valida contra resources/analyticsCatalog.json y es el ÚNICO que llama a Augur.track
 entities/factory/              # factoryData.gd (tick/producción), factoryPlacer.gd (colocación+sinergias)
 entities/player/               # player.gd (modificadores), Bag.gd (almacén global + workers)
 entities/tilemap/              # tileMap.gd, tile_map.gdshader (highlight de hover), highligh.tres
-ui/                            # mainMenu, packageSelect, radialMenu, upgradeScreen, runSummary, factoryTooltip, factoryPanel
+ui/                            # mainMenu, consentScreen, packageSelect, radialMenu, upgradeScreen, runSummary, factoryTooltip, factoryPanel
 resources/factoryParams.json   # Factories, Workers, Checkpoints, Upgrades, StartingPackages, TileTypes, Maps
-tools/                         # ver_dilema.gd, ver_cuellos.gd, ver_variedad.gd — conductores CON ventana
+tools/                         # ver_dilema.gd, ver_cuellos.gd, ver_variedad.gd, ver_clima.gd — conductores CON ventana; export_catalog.gd — catálogo de analítica en formato catalog.upsert; augur-setup.sh <endpoint> <email> [slug] — sube catálogo, índices, tableros (augur-boards.json) y contexto (augur-context.md) a un Augur; export.sh — builds de Linux y Windows con la clave de prod embebida
 ```
+
+> **Excepción: `Augur`** (`addons/augur/`, copia del SDK; no se edita aquí) es el único autoload. Solo
+> `managers/analytics.gd` llama a `Augur.track` —el resto llama a `analytics.track("<evento>", …)` con
+> eventos de `resources/analyticsCatalog.json`—, y la suite lo vigila (bloque «Analítica M1», sin
+> excepciones desde M2). La run la abren y cierran `analytics.begin_run()` (final de `_start_game()`) y
+> `analytics.end_run()` (ganar, perder, `R` y `Augur.closing`; idempotente por run). Desde M3 `Main` manda
+> también las acciones del jugador; las pantallas de `ui/` no conocen `analytics` y emiten señales
+> (`radialMenu.closed(built)`, y `workers_changed`/`material_selected`/`belt_filter_set` del panel solo
+> si la acción se aplica). Desde M4 `Analytics._process()` manda `run_sample` cada 10 s de
+> `gameManager.run_time` (no de reloj: se para con las cartas y con el árbol pausado), una sola por
+> frame. Sin `AUGUR_KEY` no hace nada. Con ella, el consentimiento lo da el jugador (Plan «Builds Públicas
+> con Consentimiento», M1): sin decisión en disco `Main._ready()` monta `ui/consentScreen.gd` antes que el
+> menú, y «Privacidad» en `ui/mainMenu.gd` (solo si Augur está configurado) la reabre en modo `change`; la
+> pantalla emite `decided(granted)` y es `Main` quien llama a `Augur.set_consent()`. Clave y endpoint (M2, `Main._augur_settings()`): en el editor de `AUGUR_KEY`/`AUGUR_ENDPOINT` —ignorando `res://augur_release.cfg` aunque exista—; en build exportada (`OS.has_feature("template")`) de ese `.cfg`, que embebe `tools/export.sh`, ignorando el entorno. `tools/augur-setup.sh <endpoint> <email> [slug=balactorio]` (M5)
+> prepara el Augur (catálogo, `propIndex` de cinco props, tableros de `tools/augur-boards.json`, con un
+> `count` al lado de cada `avg` porque el `n` de Augur cuenta sesiones, y `claude_context` de
+> `tools/augur-context.md`); es idempotente y pide la contraseña con `read -s` en una terminal.
 
 Los managers se instancian en `Main._start_game()` con `load(...).new()`, no vía autoload. Las
 pantallas de `ui/` se construyen por código en su `initialize()`; no tienen `.tscn`.
@@ -275,11 +295,13 @@ Las factories se definen en `factoryParams.json` → bloque `Factories`:
 > la escala del **tintado**: salió del HUD en M7 porque `… / 200` deja de informar en cuanto el
 > contagio arranca, así que el texto es `Contaminación: N  (restaurar: ≤ M)`.
 > **Perder no toca `user://save.json`**, al revés que `_on_run_won()`.
+> **La suite y el juego comparten `user://`**: `tests/run_tests.gd` redirige `RunSave.default_path` a
+> `user://test_run.json` en su primera línea; cualquier conductor que monte `Main` debe hacer lo mismo.
 
 ## Tests
 
 ```bash
-godot-4 --headless --path . --script res://tests/run_tests.gd   # 1023 comprobaciones, exit 0/1
+godot-4 --headless --path . --script res://tests/run_tests.gd   # 1458 comprobaciones, exit 0/1
 ```
 
 `tests/run_tests.gd` cubre **relaciones**, no cantidades: afirma que las constantes siguen
@@ -298,6 +320,8 @@ Lo que queda para verificar, además de la suite, es mirar el juego con ventana:
 godot-4 --path . --script res://tools/ver_dilema.gd    # CON ventana; deja PNG en capturas/
 godot-4 --path . --script res://tools/ver_cuellos.gd   # CON ventana; los cuatro estados de parada
 godot-4 --path . --script res://tools/ver_variedad.gd  # CON ventana; las siete situaciones de Variedad
+godot-4 --path . --script res://tools/ver_clima.gd    # CON ventana; los cuatro climas, solape, fin y deadlock
+godot-4 --path . --script res://tools/ver_clima.gd -- riesgo_largo  # sequía sobre la línea 300 s, con control
 ```
 
 `ver_variedad.gd` (2026-09-22) es el tercero: el desplegable `brick`/`glass` del panel de la
@@ -318,10 +342,17 @@ RenderingServer.frame_post_draw` antes de `save_png()` o guardas el frame anteri
 
 ## Build
 
-No hay comandos de build por terminal. Se exporta desde el **Godot Editor**: `Project → Export`.
-Requiere Export Templates de Godot 4.7. El binario del sistema es `godot-4` (snap):
+Se exporta por terminal con `tools/export.sh` *(Plan «Builds Públicas con Consentimiento», M2)*:
+los dos presets versionados de `export_presets.cfg` (`Linux` y `Windows Desktop`, x86_64) con las
+Export Templates **mono** 4.7.2 del snap. El script lee la clave de Augur de prod de
+`~/.config/augur/balactorio-release.key` (fuera del repo, `chmod 600`; `AUGUR_RELEASE_KEY_FILE`
+apunta a otra), escribe `res://augur_release.cfg` —el `include_filter` lo mete en el `.pck`— y lo
+borra al salir (`trap`). Sin fichero de clave falla con un error claro. `builds/` y
+`augur_release.cfg` están en `.gitignore`. **No arranques la build para probar**: manda a prod.
+El binario del sistema es `godot-4` (snap):
 
 ```bash
 godot-4 --path .                  # abrir en el editor
 godot-4 --path . res://Main.tscn  # ejecutar la escena principal
+tools/export.sh                   # → builds/linux/Balactorio.x86_64 y builds/windows/Balactorio.exe
 ```

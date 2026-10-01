@@ -10,6 +10,18 @@ var _cell_colors = {};    # Vector2i -> Color
 var _tint_overlay = null; # canvas item propio para el tinte; ver TintOverlay
 var _status_overlay = null; # canvas item propio para el estado de las factorías; ver StatusOverlay
 var _factory_array = [];  # las factorías vivas; la inyecta Main, ver setFactories()
+var game_manager = null;  # de él sale la ventana del punto muerto; ver setGameManager()
+var weather_manager = null;  # clima por zonas (lluvia, viento, tinte M5); ver setWeatherManager()
+
+# Alpha máximo del tinte de colapso, el que se alcanza con la gracia agotada. Es un tope de
+# LEGIBILIDAD, no de balance: a 0,55 el rojo manda sobre el color del tipo (0,45) y sobre el
+# de contaminación de una casilla ya bloqueada (0,5), pero todavía deja ver las factorías y
+# las cintas, que van en overlays superiores. Lo que dura la subida NO está aquí: sale de
+# DEADLOCK_GRACE, que es provisional y se lee del gameManager, nunca se copia.
+const COLLAPSE_MAX_ALPHA = 0.55;
+# Más oscuro y sin verde, frente al rojo anaranjado (1.0, 0.15, 0.0) de la contaminación: son
+# dos avisos distintos —«esta casilla está sucia» y «la run se muere»— y no deben confundirse.
+const COLLAPSE_COLOR = Color(0.85, 0.0, 0.0);
 
 # El tinte de casilla NO puede salir por el _draw() de este nodo. Un TileMap pinta cada capa
 # en un canvas item HIJO del suyo, así que lo que dibuje el nodo queda por debajo de los
@@ -130,8 +142,8 @@ func _process(_delta):
 	_update_hover();
 	_redraw_tints();
 	# Por frame y sin señal, igual que el tinte: `blocked_reason` cambia en el tick de cada
-	# factoría, y una señal por cambio repetiría el coste que ya documenta `pollution_changed`
-	# —~1.300 emisiones por frame con el mapa saturado— para un dibujo que de todas formas se
+	# factoría, y una señal por cambio costaría ~1.300 emisiones por frame con el mapa saturado
+	# —el mismo coste por el que el PollutionManager tampoco emite nada— para un dibujo que se
 	# vuelve a pintar en el frame siguiente.
 	_redraw_status();
 
@@ -153,6 +165,37 @@ func tick_passive(pollution_manager_ref, delta):
 		elif passive > 0.0:
 			# Los que ensucian siguen ensuciando solo la suya: un foco es un foco.
 			pollution_manager_ref.addPollution(passive, cell);
+	_tick_weather_passive(pollution_manager_ref, delta);
+
+# Pasiva del clima (Plan «Eventos Climáticos», M2): la lluvia. Pasada PROPIA y no dentro del
+# bucle de arriba porque ese recorre `cell_types`, que solo tiene las casillas especiales: la
+# lluvia no llegaría nunca al suelo normal, que es donde están las factorías y lo sucio.
+# Recorre las casillas de las zonas activas (sin repetir las de dos zonas solapadas: la suma
+# ya la hace getPassiveAt()) que tengan tile de suelo, es decir, que sean del mapa.
+# Por SEGUNDO como todo lo pasivo: se escala por delta.
+# CASILLA A CASILLA y no en área como el lago: la zona ya es el área, y repartir cada casilla
+# entre sus 8 vecinas sacaría la lluvia de su zona. removePollution() solo descuenta del global
+# lo que quita de verdad de la casilla, así que llover sobre suelo limpio no acerca la victoria.
+# Una casilla con lago bajo la lluvia suma los dos pasivos: es coherente y no se evita.
+# Sin manager (la suite monta TileMaps sueltos), con él liberado o sin eventos: no hace nada.
+func _tick_weather_passive(pollution_manager_ref, delta):
+	if not is_instance_valid(weather_manager) or weather_manager.active.is_empty():
+		return;
+	var seen = {};
+	for ev in weather_manager.active:
+		for y in range(ev.rect.position.y, ev.rect.end.y):
+			for x in range(ev.rect.position.x, ev.rect.end.x):
+				var cell = Vector2i(x, y);
+				if seen.has(cell):
+					continue;
+				seen[cell] = true;
+				if not _existsOnGround(cell):
+					continue;
+				var passive = weather_manager.getPassiveAt(cell) * delta;
+				if passive < 0.0:
+					pollution_manager_ref.removePollution(-passive, cell);
+				elif passive > 0.0:
+					pollution_manager_ref.addPollution(passive, cell);
 
 # El contagio: una casilla saturada desborda sobre sus vecinas. Sin él, el ahogo solo ensucia
 # la casilla de cada factoría y un mapa de 16x10 conserva decenas de casillas limpias para
@@ -182,8 +225,28 @@ func tick_contagion(pollution_manager_ref, delta):
 		if not _existsOnGround(cell):
 			continue;
 		sources.append(cell);
+	# Viento (clima M4): un foco dentro de una zona de viento no reparte entre las 8 vecinas
+	# sino que lo manda todo a la de sotavento. SOLO cambia la dirección: la cantidad total
+	# se conserva —spreadFrom() da `amount` a CADA vecina, así que sotavento recibe 8×amount—,
+	# y ni contagion_rate, ni el umbral, ni la congelación de focos de arriba se tocan (de
+	# ellos cuelga la derrota). Si la vecina de sotavento no existe (borde del mapa), el foco
+	# contagia como siempre: el viento no puede tirar suciedad fuera del mapa ni hacerla
+	# desaparecer. Sin WeatherManager, sin viento o con el clima suspendido (plan B 1) la
+	# dirección es ZERO y el camino es exactamente el de antes.
+	var downwind_amount = amount * pollution_manager_ref.NEIGHBOR_OFFSETS.size();
 	for cell in sources:
-		pollution_manager_ref.spreadFrom(cell, amount, is_valid);
+		var dir = _windAt(cell);
+		if dir != Vector2i.ZERO and _existsOnGround(cell + dir):
+			pollution_manager_ref.addPollution(downwind_amount, cell + dir);
+		else:
+			pollution_manager_ref.spreadFrom(cell, amount, is_valid);
+
+# Dirección del viento sobre `cell`, o ZERO si no hay manager inyectado (TileMap suelto en
+# la suite o antes de _start_game) o no sopla ahí.
+func _windAt(cell) -> Vector2i:
+	if not is_instance_valid(weather_manager):
+		return Vector2i.ZERO;
+	return weather_manager.getContagionDirectionAt(cell);
 
 # Única verdad de «esta casilla existe» para el contagio, y la misma condición 1 de
 # canPlaceFactory(): sin tile en la capa de suelo, la casilla no es del mapa.
@@ -393,8 +456,10 @@ func _update_hover():
 			set_cell(1, cell, 0, Vector2i(0, 0));
 		last_hovered_cell = cell;
 
-# Lo pinta el TintOverlay, no este nodo. El orden de las dos pasadas es el que se lee: el
-# rojo de contaminación va DESPUÉS del color del tipo para leerse encima de él.
+# Lo pinta el TintOverlay, no este nodo. El orden de las pasadas es el que se lee: el rojo
+# de contaminación va DESPUÉS del color del tipo para leerse encima de él, el clima (M5) va
+# encima de los dos porque es lo que está pasando AHORA en esa zona y caduca, y el colapso va
+# el último porque es el único que habla del mapa entero y no de una casilla.
 func draw_tints(target):
 	for cell in _cell_colors:
 		if _cell_sprite_sources.has(cell):
@@ -408,6 +473,97 @@ func draw_tints(target):
 			var level = pollution_manager.getCellPollution(cell);
 			if level > 0.01:
 				_draw_diamond(target, cell, Color(1.0, 0.15, 0.0, level * 0.5));
+	_draw_weather(target);
+	# Cuarta pasada: el punto muerto tiñe TODO el suelo, no solo lo sucio, porque lo que se
+	# anuncia es que la run entera se acaba. Con la ventana cerrada la intensidad es 0 y no se
+	# pinta nada: el corte en seco al romper la condición no necesita código propio, porque
+	# _process() repinta este overlay cada frame y el frame siguiente ya sale sin la pasada.
+	var collapse = collapseIntensity();
+	if collapse > 0.0:
+		var red = Color(COLLAPSE_COLOR.r, COLLAPSE_COLOR.g, COLLAPSE_COLOR.b,
+			collapse * COLLAPSE_MAX_ALPHA);
+		for cell in get_used_cells(0):
+			_draw_diamond(target, cell, red);
+
+# Grosor del contorno de una zona de clima, en píxeles. El contorno es lo que separa la zona
+# de la contaminación de un vistazo: el rojo de contaminación va casilla a casilla y sin borde,
+# y una zona de clima es UN rectángulo con su perímetro dibujado.
+const WEATHER_BORDER_WIDTH = 3.0;
+# Alpha del contorno: el color del catálogo casi opaco. El relleno usa el alpha del catálogo
+# tal cual (0,30-0,40), que es el que decide su dueño en el JSON.
+const WEATHER_BORDER_ALPHA = 0.95;
+# Y debajo del contorno de color, uno oscuro más ancho, por lo mismo que el marcador de estado
+# lleva borde: mirando las capturas, la sequía (ocre) sobre un suelo ya teñido de contaminación
+# se leía casi del mismo color que el suelo, y su contorno naranja se perdía. Con el filo oscuro
+# el perímetro se lee igual sobre verde que sobre rojo.
+const WEATHER_UNDERLINE_WIDTH = 6.0;
+const WEATHER_UNDERLINE_COLOR = Color(0.05, 0.05, 0.08, 0.55);
+
+# Tercera pasada de draw_tints() (Clima M5): cada evento vivo tiñe su rectángulo con el color
+# del catálogo y le dibuja el contorno. Solo las casillas con suelo: el rectángulo ya viene
+# recortado contra el mapa, pero un mapa puede tener huecos. Suspendido (plan B 1, ventana de
+# punto muerto abierta) no se pinta nada, igual que el manager no aplica nada: una zona tintada
+# que no hace efecto mentiría. SOLO lee, como collapseIntensity(): se llama en cada dibujo.
+func _draw_weather(target):
+	if not is_instance_valid(weather_manager) or weather_manager.isSuspended():
+		return;
+	for ev in weather_manager.active:
+		var cells = weatherCells(ev);
+		if cells.is_empty():
+			continue;
+		var c = _weatherColor(ev.id);
+		for cell in cells:
+			_draw_diamond(target, cell, c);
+		var border = Color(c.r, c.g, c.b, WEATHER_BORDER_ALPHA);
+		var inside = {};
+		for cell in cells:
+			inside[cell] = true;
+		# Dos vueltas y no una por lado: todo el filo oscuro primero y el color encima, o el filo
+		# de un lado taparía la esquina del color del lado anterior.
+		for layer in [[WEATHER_UNDERLINE_COLOR, WEATHER_UNDERLINE_WIDTH], [border, WEATHER_BORDER_WIDTH]]:
+			for cell in cells:
+				for step in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+					if not inside.has(cell + step):
+						_draw_diamond_edge(target, cell, cell + step, layer[0], layer[1]);
+
+# Las casillas de suelo que cubre un evento. Pública porque es la que decide QUÉ se tiñe, y la
+# suite la prueba sin tener que reconocer polígonos por su color.
+func weatherCells(ev) -> Array:
+	var cells = [];
+	for y in range(ev.rect.position.y, ev.rect.end.y):
+		for x in range(ev.rect.position.x, ev.rect.end.x):
+			var cell = Vector2i(x, y);
+			if get_cell_source_id(0, cell) != -1:
+				cells.append(cell);
+	return cells;
+
+func _weatherColor(id) -> Color:
+	var col = weather_manager.catalog.get(id, {}).get("color", [1.0, 1.0, 1.0, 0.3]);
+	return Color(float(col[0]), float(col[1]), float(col[2]), float(col[3]));
+
+# El lado del rombo de `cell` que da a `neighbor`: los dos vértices más cercanos al centro de
+# la vecina. Se calcula así y no con una tabla de lados porque la tabla dependería del
+# `tile_layout` del TileSet (hoy DIAMOND_DOWN); esto vale para cualquiera.
+func _draw_diamond_edge(target, cell, neighbor, color, width):
+	var center = map_to_local(cell);
+	var towards = map_to_local(neighbor);
+	var corners = [center + Vector2(0, -16.0), center + Vector2(32.0, 0),
+		center + Vector2(0, 16.0), center + Vector2(-32.0, 0)];
+	corners.sort_custom(func(a, b): return a.distance_squared_to(towards) < b.distance_squared_to(towards));
+	target.draw_polyline(PackedVector2Array([corners[0], corners[1]]), color, width);
+
+# Cuánto se ha agotado la gracia del punto muerto: 0 con la ventana cerrada (o sin
+# gameManager), y de 0 a 1 según corre, lineal con run_time. SOLO lee, por lo mismo que
+# gameManager._deadlockText(): se llama en cada dibujo, y mirar el mapa no puede mover la
+# partida. `deadlock_timer` es el run_time en que se abrió la ventana, no una cuenta atrás
+# —0.0 es «cerrada»—, así que lo corrido se calcula contra run_time.
+func collapseIntensity() -> float:
+	if game_manager == null or not is_instance_valid(game_manager):
+		return 0.0;
+	var opened_at = game_manager.deadlock_timer;
+	if opened_at <= 0.0:
+		return 0.0;
+	return clamp((game_manager.run_time - opened_at) / game_manager.DEADLOCK_GRACE, 0.0, 1.0);
 
 # target es el canvas item que dibuja: las llamadas draw_*() solo pintan sobre el nodo que
 # las ejecuta, así que el diamante se calcula aquí y se dibuja allí.
@@ -433,6 +589,9 @@ const STATUS_COLORS := {
 	"input":   Color(0.90, 0.35, 0.15),  # naranja: te falta material
 	"output":  Color(0.55, 0.45, 0.85),  # violeta: no tiene por dónde salir
 	"choke":   Color(0.85, 0.15, 0.10),  # rojo: el suelo la está matando
+	# Azul grisáceo, el de la tormenta del catálogo (WeatherEvents.storm.color) pero opaco y más
+	# claro: el marcador tiene que leerse sobre el tinte de la zona, que es ese mismo color al 40%.
+	"storm":   Color(0.60, 0.70, 0.78),  # azul grisáceo: la para una tormenta — espera
 }
 
 # El marcador se mide en píxeles y no en fracción de casilla: la casilla isométrica es 64x32 y
@@ -513,3 +672,19 @@ func setBeltNetwork(bn):
 # mano y no tienen por qué enterarse de que existe un overlay de estado—.
 func setFactories(factory_array):
 	_factory_array = factory_array if factory_array != null else [];
+
+# El cuarto setter, y el único al revés del resto: el gameManager ya recibe este TileMap por
+# gameManager.setTileMap() para evaluar el punto muerto, y el tinte de colapso necesita leer
+# esa misma ventana. Se inyecta en vez de buscarlo en el árbol por lo mismo que setFactories():
+# se lee en cada dibujo. Sin llamarlo —la suite monta TileMaps sueltos— la tercera pasada de
+# draw_tints() no pinta nada.
+func setGameManager(gm):
+	game_manager = gm;
+
+# El quinto setter, hermano de los de arriba: la pasada de lluvia de tick_passive() corre cada
+# frame y no puede salir a buscar el manager al árbol. Lo inyecta Main._start_game() después
+# de crearlo. Sin llamarlo —la suite monta TileMaps sueltos— la lluvia no existe y
+# tick_passive() hace exactamente lo de antes. Se mira con is_instance_valid(): Main.reset()
+# lo suelta y un nodo liberado se compara igual que null.
+func setWeatherManager(wm):
+	weather_manager = wm;

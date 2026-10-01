@@ -60,7 +60,10 @@ const NEIGHBOR_OFFSETS = [
 	Vector2i(-1, -1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(1, 1)
 ];
 
-signal pollution_changed(new_total);
+# Sin señal de cambio, a propósito (Plan «Legibilidad de la Run», M1): el HUD y el tintado
+# consultan este nodo directamente cada frame, y una emisión por cada add/remove costaría
+# ~1.300 llamadas por frame con el mapa saturado para recalcular lo que ya se recalcula. La
+# que hubo nació por simetría y nunca tuvo un solo oyente.
 
 func addPollution(amount, cell = null):
 	total_pollution += amount;
@@ -70,7 +73,6 @@ func addPollution(amount, cell = null):
 		if not pollution_per_cell.has(cell):
 			pollution_per_cell[cell] = 0.0;
 		pollution_per_cell[cell] += amount;
-	pollution_changed.emit(total_pollution);
 
 # El global solo baja lo que se ha quitado DE VERDAD de la casilla: la contaminación vive
 # en las casillas, así que limpiar sobre una celda ya limpia no debe acercar la victoria.
@@ -88,7 +90,6 @@ func removePollution(amount, cell = null):
 			total_pollution = max(0.0, total_pollution - quitado);
 	else:
 		total_pollution = max(0.0, total_pollution - amount);
-	pollution_changed.emit(total_pollution);
 
 # Limpieza en área: reparte `amount` entre la celda y sus 8 vecinas, un noveno cada una.
 # Vive aquí y no en quien limpia porque lo usan dos sitios —las factorías de restauración
@@ -146,12 +147,45 @@ func isRestored():
 #   2. Ocupaba los 8 caracteres que hacían que la línea del HUD se saliera de pantalla cuando
 #      el aviso de colapso se le pone delante (ver gameManager.HUD_MAX_CHARS).
 # El número que el jugador sí necesita es el umbral de restauración, que ya escala con el pico.
+# Devuelve SOLO el dato, sin etiqueta: «Contaminación: » lo antepone quien lo coloca en el HUD
+# (gameManager._progressText(), en sus dos llamadas). Hasta Legibilidad M1 la etiqueta venía
+# de aquí y la fase de restauración la envolvía en un «Restaurando: », así que el HUD decía
+# `Restaurando: Contaminación: …` —dos rótulos para un solo número—. Este nodo conoce el dato;
+# el contexto lo decide el HUD.
 func getStatusText():
-	return "Contaminación: %d  (restaurar: ≤ %d)" % [
+	return "%d  (restaurar: ≤ %d)" % [
 		int(total_pollution), int(getRestorationThreshold())];
 
 func reset():
 	total_pollution = 0.0;
 	pollution_per_cell.clear();
 	peak_pollution = 0.0;
-	pollution_changed.emit(0.0);
+
+# ---------- Serialización de Run (M1) ----------
+
+const RunSave = preload("res://managers/runSave.gd");
+
+# Las claves de `pollution_per_cell` son Vector2i y JSON no las conserva: salen como "x,y".
+# Los umbrales y tasas no se guardan: son constantes de clase, y un save de otro balance ya se
+# descarta entero por `params_hash`.
+func snapshot() -> Dictionary:
+	var celdas = {};
+	for cell in pollution_per_cell:
+		celdas[RunSave.cell_key(cell)] = float(pollution_per_cell[cell]);
+	return {
+		"total_pollution": float(total_pollution),
+		"peak_pollution": float(peak_pollution),
+		"pollution_per_cell": celdas,
+	};
+
+# Serialización de Run (M2): el espejo de snapshot(). PISA, no suma: al reanudar se llama
+# DESPUÉS de apply_map(), que acaba de repartir `pollution_start` sobre los focos del mapa, y
+# sumando la suciedad inicial se contaría dos veces. Por eso vacía `pollution_per_cell` antes
+# de rellenarla, y float() porque de JSON un 3.0 escrito como 3 vuelve como número sin decimales.
+func restore(d: Dictionary) -> void:
+	total_pollution = float(d.get("total_pollution", 0.0));
+	peak_pollution = float(d.get("peak_pollution", 0.0));
+	pollution_per_cell.clear();
+	var celdas = d.get("pollution_per_cell", {});
+	for key in celdas:
+		pollution_per_cell[RunSave.parse_cell(String(key))] = float(celdas[key]);

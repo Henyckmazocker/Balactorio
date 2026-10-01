@@ -5,6 +5,13 @@ extends Node
 # tick. Se pregunta por aquí y no por el campo para que el tooltip no pueda discrepar del panel
 # ni del marcador del mapa, que ya preguntan por este mismo sitio.
 const BLOCKED_REASON = preload("res://ui/blockedReason.gd");
+const ConsentScreen = preload("res://ui/consentScreen.gd");
+# La clave de prod de las builds (M2 del plan de builds públicas). La genera `tools/export.sh`, está
+# en `.gitignore` y solo se lee en build exportada: ver `_augur_settings()`.
+const AUGUR_RELEASE_CFG = "res://augur_release.cfg";
+# El fichero de la run en curso (Plan «Serialización de Run»). En M1 solo la versión del formato
+# y la conversión de celdas a "x,y", que es lo que necesita _capture_run().
+const RunSave = preload("res://managers/runSave.gd");
 
 var factoryArray = [];
 var file = "resources/factoryParams.json";
@@ -12,9 +19,17 @@ var fileData;
 var gameManager;
 var pollutionManager;
 var saveManager;
+var analytics;
 var mapLoader;
 var placer;
 var beltNetwork;
+# Clima por zonas (Plan «Eventos Climáticos», M1). Hermano de los demás managers: nodo hijo de
+# Main creado en _start_game(), no autoload.
+var weatherManager;
+# Interruptor del clima para la suite y las herramientas: una prueba que monta Main lo pone a
+# false ANTES de _start_game() y la run nace con el clima apagado —no tira nunca—, así que la
+# suite no puede volverse aleatoria. El juego lo deja siempre a true.
+var weather_enabled: bool = true;
 var _hovered_factory = null;
 # La razón con la que se pintó el tooltip que hay en pantalla ahora mismo (M4). El tooltip no se
 # repinta solo: `_update_hover_tooltip()` solo lo reconstruía cuando el cursor cambiaba de
@@ -41,25 +56,206 @@ var _drag_start_cell = null;
 # siempre, que es lo que el jugador lee.
 var render_enabled: bool = DisplayServer.get_name() != "headless";
 
+# Analítica de runs (Plan «Analítica de Runs», M2). El `run_end` una sola vez por run lo guarda
+# `analytics.end_run()`, que es idempotente: ganar y luego pulsar `R`, o la `R` desde el menú sin
+# run, no mandan nada. Aquí solo queda lo que `analytics` no puede saber por sí mismo:
+# - el mapa que eligió `pick_map()`, para `run_start`/`run_end`;
+# - la oferta de cartas en pantalla, para mandar al elegir una fila de `card_offered` por carta
+#   (`slot` 1..N: las ruinas ofrecen una sola) con `decision_ms` desde que se montó;
+# - el `run_time` del checkpoint anterior, para el `seg_t` de `checkpoint_reached`.
+var _run_map_id := "";
+var _offer_ids := [];
+var _offer_source := "";
+var _offer_checkpoint := 0;
+var _offer_ms := 0;
+var _prev_checkpoint_t := 0.0;
+# Serialización de Run (M1). El paquete con el que arrancó la run: hasta ahora solo lo recibía
+# _start_game() y se perdía al salir de ella, y el snapshot lo necesita para que la run reanudada
+# diga de qué paquete viene. Lo asigna _start_game(); "" sin run.
+var _run_package_id := "";
+# La huella del JSON de balance con la que se leyó esta sesión (`Analytics.balance_id()` sobre el
+# texto tal cual, sin constantes): un snapshot de otro balance puede citar factorías o materiales
+# que ya no existen y se tira entero (M3). Se calcula una vez en _ready(), con el texto a mano.
+var _params_hash := "";
+# El fichero de la run en curso (M3). Una sola instancia, la única que lo toca: su `path` sale
+# de `RunSave.default_path` al construirse Main, que es como la suite lo aparta del real.
+var runSave = RunSave.new();
+# Autoguardado (M4): cada AUTOSAVE_INTERVAL segundos de mundo se escribe la run, para que matar el
+# proceso —sin cierre de ventana que avise— pierda como mucho eso. Se acumula en _tick_world(),
+# que solo corre con el árbol sin pausar: con las cartas o el resumen en pantalla no hay nada
+# nuevo que guardar. Vuelve a 0 en cada run que se monta.
+const AUTOSAVE_INTERVAL: float = 20.0;
+var _autosave_t: float = 0.0;
+# true tras `Augur.configure()` en `_configure_augur()` (Plan «Builds Públicas con Consentimiento»,
+# M1). Sin él no se pregunta el consentimiento ni sale «Privacidad» en el menú.
+var _augur_enabled := false;
+
 @export var factory: PackedScene
 @export var player: PackedScene
 @export var grid: PackedScene
 
 func _ready():
+	var json_as_text = FileAccess.get_file_as_string(file);
+	fileData = JSON.parse_string(json_as_text);
+	_params_hash = load("res://managers/analytics.gd").balance_id(json_as_text, {});
+
+	# Analítica de runs (Plan «Analítica de Runs», M1): la única que habla con `Augur`. Va ANTES de
+	# _configure_augur(), que en M2 le ata el `Augur.closing`, y vive toda la sesión como el
+	# SaveManager: reset() no la libera, porque el `run_end` por cierre de ventana llega con los
+	# nodos de la run ya liberándose. Recibe el texto del JSON tal cual se leyó para `balance_id`.
+	analytics = load("res://managers/analytics.gd").new();
+	analytics.name = "Analytics";
+	add_child(analytics);
+	analytics.initialize(fileData, json_as_text);
+	# Lo que el censo de `run_end` no puede contar solo: cintas y pantalla abierta (M2).
+	analytics.census_probe = _run_end_census;
+
+	_configure_augur();
 	saveManager = load("res://managers/saveManager.gd").new();
 	saveManager.name = "SaveManager";
 	add_child(saveManager);
 
 	mapLoader = load("res://managers/mapLoader.gd").new();
 
-	var json_as_text = FileAccess.get_file_as_string(file);
-	fileData = JSON.parse_string(json_as_text);
+	# Plan «Builds Públicas con Consentimiento», M1: sin decisión en disco se pregunta ANTES de
+	# que exista el menú, y el menú nace en `decided`. Sin Augur configurado no hay nada que
+	# preguntar y se va derecho al menú, como siempre.
+	if _augur_enabled and not Augur.has_consent_decision():
+		_show_consent_screen(ConsentScreen.MODE_FIRST_RUN);
+	else:
+		_show_main_menu();
 
+# El menú principal. Solo lo crea `_ready()`, directamente o tras la primera decisión de
+# consentimiento: `reset()` vuelve a `packageSelect`, no aquí.
+func _show_main_menu():
 	var menu = load("res://ui/mainMenu.gd").new();
 	menu.name = "MainMenu";
+	# Serialización de Run (M5): «CONTINUAR» solo con un save que valga para este balance.
+	# exists_valid() no borra; el de otro balance lo tira read_valid() al pulsar JUGAR o continuar.
+	# initialize() ANTES de add_child(): si no, el _ready() del menú lo construía una vez sin
+	# saveManager y initialize() otra encima, y debajo quedaba un «JUGAR» sin la confirmación.
+	menu.initialize(saveManager, _augur_enabled, runSave.exists_valid(_params_hash));
 	add_child(menu);
-	menu.initialize(saveManager);
-	menu.play_pressed.connect(_show_package_select);
+	menu.play_pressed.connect(_on_menu_play);
+	menu.continue_pressed.connect(_on_menu_continue);
+	menu.privacy_pressed.connect(_on_privacy_pressed);
+	analytics.track("ui_open", {"screen": "main_menu"});
+
+# «JUGAR» (con run guardada, ya confirmado «Empezar nueva»): la run guardada se borra ANTES de
+# elegir paquete. Borra aquí y no el menú porque el menú no toca disco; sin save es un no-op.
+func _on_menu_play():
+	runSave.clear();
+	_show_package_select();
+
+# «CONTINUAR». Si el save dejó de valer entre que se pintó el menú y el click (read_valid() ya lo
+# ha borrado), se cae a elegir paquete: el menú ya se ha liberado y la pantalla quedaría en negro.
+func _on_menu_continue():
+	if not _continue_from_file():
+		_show_package_select();
+
+# Monta la pantalla de consentimiento. La pantalla no toca `Augur`: la decisión vuelve por
+# `decided` y el SDK lo llama Main, que es quien sabe si está configurado.
+func _show_consent_screen(mode: String):
+	var screen = ConsentScreen.new();
+	screen.name = "ConsentScreen";
+	add_child(screen);
+	screen.initialize(mode, Augur.has_consent());
+	if mode == ConsentScreen.MODE_FIRST_RUN:
+		screen.decided.connect(_on_first_consent);
+	else:
+		screen.decided.connect(_on_consent_changed);
+
+# Primer arranque: se guarda la decisión y AHORA nace el menú. Con «Aceptar» `set_consent(true)`
+# abre la sesión antes del `ui_open` del menú, así que ese evento ya entra en ella; con «No,
+# gracias» `track()` no escribe nada.
+func _on_first_consent(granted: bool):
+	Augur.set_consent(granted);
+	_show_main_menu();
+
+# Desde «Privacidad»: el menú sigue debajo. Solo se llama al SDK si la decisión cambia; retirarla
+# (`set_consent(false)`) borra la cola local, que es lo que promete el texto.
+func _on_consent_changed(granted: bool):
+	if granted != Augur.has_consent():
+		Augur.set_consent(granted);
+
+func _on_privacy_pressed():
+	if get_node_or_null("ConsentScreen") != null:
+		return;
+	_show_consent_screen(ConsentScreen.MODE_CHANGE);
+
+# Enciende Augur si hay clave (Plan «Builds Públicas con Consentimiento», M1-M2). Sin clave no se
+# llama a nada y el autoload `Augur` no escribe en disco ni abre red: la suite y cualquier partida
+# normal se quedan exactamente como antes, y tampoco se pregunta nada (`_augur_enabled` sigue en
+# false). Con clave, el consentimiento NO lo da el entorno: lo pide la pantalla de consentimiento en
+# el primer arranque y se cambia desde «Privacidad», también en el editor. De dónde sale la clave
+# lo decide `_augur_settings()`: entorno en el editor, `res://augur_release.cfg` en build.
+func _configure_augur():
+	var settings := _augur_settings(OS.has_feature("template"), AUGUR_RELEASE_CFG);
+	var key: String = settings["key"];
+	if key == "":
+		return;
+	var endpoint: String = settings["endpoint"];
+	if endpoint == "":
+		endpoint = "http://localhost:8897";
+	Augur.configure(key, endpoint);
+	# El SDK no expone si está configurado (`_configured` es privado), así que Main lleva su propia
+	# cuenta: de ella cuelgan la pantalla del primer arranque y el botón «Privacidad».
+	_augur_enabled = true;
+	# Cerrar la ventana con una run viva la GUARDA y la cierra como `suspend` (Serialización M4;
+	# antes era `abandon`: con «Continuar», cerrar ya no es abandonar). Va por la señal del SDK
+	# porque el autoload recibe el cierre antes que Main y mandaría su `session_end` primero. Sin
+	# run viva `end_run()` no hace nada. Los Main de la suite no tienen analytics.
+	if analytics:
+		Augur.closing.connect(_on_app_closing);
+
+# Clave y endpoint de Augur según dónde corre el juego. En una build exportada (`template`, true
+# también en las debug) salen de `res://augur_release.cfg`, que escribe `tools/export.sh` dentro del
+# `.pck` y borra al acabar: una build pública no tiene entorno, y rotar la clave no pide commit. En
+# el editor salen de `AUGUR_KEY`/`AUGUR_ENDPOINT` y el `.cfg` se IGNORA aunque exista (p. ej. si un
+# export se cortó a medias): desde el editor nunca se manda a prod. `is_template` y `cfg_path` van
+# por parámetro para que la suite, que nunca es template, pruebe las dos ramas sin exportar.
+func _augur_settings(is_template: bool, cfg_path: String) -> Dictionary:
+	var key := "";
+	var endpoint := "";
+	if is_template:
+		var cfg := ConfigFile.new();
+		if cfg.load(cfg_path) == OK:
+			key = str(cfg.get_value("augur", "write_key", "")).strip_edges();
+			endpoint = str(cfg.get_value("augur", "endpoint", "")).strip_edges();
+	else:
+		key = OS.get_environment("AUGUR_KEY");
+		endpoint = OS.get_environment("AUGUR_ENDPOINT");
+	return {"key": key, "endpoint": endpoint};
+
+# Cierra la run para la analítica (M2). `end_run()` es idempotente por run y, sin `AUGUR_KEY`, su
+# `Augur.track()` no hace nada. Los Main de la suite montados sin `_ready()` no tienen analytics.
+func _end_run(result):
+	if analytics:
+		analytics.end_run(result);
+
+# Lo que `run_end` necesita de Main y `analytics` no cuenta solo: las casillas de cinta y qué
+# pantalla había abierta al acabar. Lo llama `analytics.end_run()` DESPUÉS de leer sus contadores
+# y la Bag; con la ventana cerrándose (`Augur.closing`) los nodos pueden estar ya fuera, así que
+# todo se pregunta con `is_instance_valid()` y lo que falte no se manda.
+func _run_end_census() -> Dictionary:
+	var extra = {"screen": _open_screen()};
+	if is_instance_valid(beltNetwork):
+		extra["belt_cells"] = int(beltNetwork.belt_count());
+	return extra;
+
+# La pantalla abierta, de más a menos modal. Un nodo en cola de borrado ya no lo ve el jugador.
+func _open_screen() -> String:
+	for pair in [["RunSummary", "run_summary"], ["UpgradeScreen", "upgrade"], ["TokenUnlock", "token"],
+			["FactoryPanel", "panel"], ["RadialMenu", "radial"]]:
+		var node = get_node_or_null(pair[0]);
+		if node != null and not node.is_queued_for_deletion():
+			return pair[1];
+	return "none";
+
+# Los eventos de run solo con run viva: sin ella `track()` los rechaza con un aviso, y los Main
+# de la suite montados a mano ni siquiera tienen analytics.
+func _run_tracked() -> bool:
+	return analytics != null and analytics.has_run();
 
 func _show_package_select():
 	var screen = load("res://ui/packageSelect.gd").new();
@@ -67,17 +263,52 @@ func _show_package_select():
 	add_child(screen);
 	screen.initialize(fileData, saveManager);
 	screen.package_chosen.connect(_start_game);
+	if analytics:
+		analytics.track("ui_open", {"screen": "package_select"});
 
+# Serialización de Run (M2): el arranque está partido en dos. Lo que ELIGE —el paquete, que
+# `apply_package()` SUMA a la bolsa, y el mapa, que `pick_map()` baraja— se queda aquí y solo
+# corre en una run nueva; el CABLEADO de managers, con su orden justificado, vive en
+# _mount_run() y lo comparte _continue_game(). Duplicarlo garantizaría que las dos copias
+# divergieran en el próximo plan que añada un manager.
 func _start_game(package_id = "standard"):
+	_mount_player_and_grid();
+
+	# Aplicar paquete de inicio
+	_run_package_id = String(package_id);
+	mapLoader.apply_package(package_id, fileData, get_node("Player"), get_node("Player").get_node("Bag"));
+
+	# Elegir mapa de la run. Va antes de _mount_run() —y no entre el placer y apply_map() como
+	# cuando todo vivía aquí— porque pick_map() solo lee el JSON y el saveManager: adelantarlo no
+	# cambia nada de lo que se monta después.
+	var map_data = mapLoader.pick_map(fileData, saveManager);
+	_run_map_id = String(map_data.get("id", ""));
+	_mount_run(map_data, true);
+	_offer_ids = [];
+	_prev_checkpoint_t = 0.0;
+	# La run empieza para la analítica: `run_id`, `balance_id` y `run_start` (M2).
+	if analytics:
+		analytics.begin_run(gameManager, pollutionManager, get_node("Player").get_node("Bag"),
+			get_node("TileMap"), factoryArray, package_id, _run_map_id);
+
+# El Player y el TileMap de la run, con la bolsa con sus claves a 0. Es el paso 1 de los dos
+# caminos de arranque: una run nueva le suma después el paquete; una reanudada, nada —la bolsa
+# guardada la pisa al final de _continue_game()—.
+func _mount_player_and_grid():
 	var playerNode = player.instantiate();
 	add_child(playerNode);
 	var playGrid = grid.instantiate();
 	add_child(playGrid);
 	get_node("Player").get_node("Bag").initialize(fileData);
 
-	# Aplicar paquete de inicio
-	mapLoader.apply_package(package_id, fileData, get_node("Player"), get_node("Player").get_node("Bag"));
-
+# El cableado de una run sobre un mapa ya elegido: managers, inyecciones y señales, en el orden
+# que justifica cada comentario. `storage` dice si apply_map() construye el almacén del mapa: en
+# una run nueva sí; al reanudar NO, porque el almacén vuelve como una factoría más del snapshot
+# y construirlo aquí daría dos en la misma celda (sin `storage_ctx`, place_storage() devuelve
+# null sin tocar nada).
+func _mount_run(map_data: Dictionary, storage: bool):
+	# El reloj del autoguardado es de la run: lo acumulado por la anterior no adelanta el primero.
+	_autosave_t = 0.0;
 	pollutionManager = load("res://managers/pollutionManager.gd").new();
 	pollutionManager.name = "PollutionManager";
 	add_child(pollutionManager);
@@ -96,19 +327,21 @@ func _start_game(package_id = "standard"):
 	placer.initialize(factory, fileData, factoryArray);
 
 	# Aplicar mapa de la run
-	var map_data = mapLoader.pick_map(fileData, saveManager);
-	mapLoader.apply_map(map_data, pollutionManager, get_node("TileMap"), fileData, {
-		"placer": placer,
-		"parent": self,
-		"player": get_node("Player"),
-		"bag": get_node("Player").get_node("Bag"),
-		"factories": factoryArray,
-		# Desde M5 el almacén EMITE, así que su `resource_produced` tiene que llegar al mismo
-		# encaminador que el de cualquier otra factoría. Va atado igual que en
-		# _on_factory_chosen(): la señal solo lleva la posición de mundo y deliver() necesita
-		# la celda, así que place_storage() le bindea el nodo.
-		"on_produced": _on_resource_produced,
-	});
+	var storage_ctx = null;
+	if storage:
+		storage_ctx = {
+			"placer": placer,
+			"parent": self,
+			"player": get_node("Player"),
+			"bag": get_node("Player").get_node("Bag"),
+			"factories": factoryArray,
+			# Desde M5 el almacén EMITE, así que su `resource_produced` tiene que llegar al mismo
+			# encaminador que el de cualquier otra factoría. Va atado igual que en
+			# _on_factory_chosen(): la señal solo lleva la posición de mundo y deliver() necesita
+			# la celda, así que place_storage() le bindea el nodo.
+			"on_produced": _on_resource_produced,
+		};
+	mapLoader.apply_map(map_data, pollutionManager, get_node("TileMap"), fileData, storage_ctx);
 
 	# Red de cintas — hermana de pollutionManager: nodo hijo de Main, no autoload. Va DESPUÉS
 	# de apply_map() porque su overlay cuelga del TileMap ya generado, y antes del gameManager
@@ -147,11 +380,82 @@ func _start_game(package_id = "standard"):
 	# Y el TileMap, tercer trozo de estado vivo y por el mismo motivo que los dos de arriba:
 	# quién sabe qué casillas existen y cuáles admiten factoría es el mapa, no el JSON. Sin
 	# esta línea el punto muerto no se evalúa nunca y la run no se puede perder. Va aquí, con
-	# el playGrid ya instanciado al principio de _start_game().
+	# el playGrid ya instanciado por _mount_player_and_grid().
 	gameManager.setTileMap(get_node("TileMap"));
+	# Y al revés: el TileMap pinta el tinte de colapso leyendo la ventana del punto muerto del
+	# gameManager (Plan «Legibilidad de la Run», M4). Va aquí porque es el primer punto en que
+	# existe el gameManager de ESTA run; el de la anterior ya no vale.
+	get_node("TileMap").setGameManager(gameManager);
 	gameManager.checkpoint_reached.connect(_on_checkpoint_reached);
 	gameManager.run_won.connect(_on_run_won);
 	gameManager.run_lost.connect(_on_run_lost);
+	gameManager.deadlock_opened.connect(_on_deadlock_opened);
+	gameManager.deadlock_closed.connect(_on_deadlock_closed);
+	# Clima (Plan «Eventos Climáticos», M1). Va DESPUÉS del gameManager porque le hace falta el
+	# de ESTA run: de su `deadlock_timer` sale el plan B 1 (ventana de punto muerto abierta =
+	# clima suspendido). Del pollutionManager sale el pico que escala la probabilidad, y del
+	# mapa elegido el tamaño contra el que se recorta cada zona.
+	weatherManager = load("res://managers/weatherManager.gd").new();
+	weatherManager.name = "WeatherManager";
+	weatherManager.initialize(fileData);
+	weatherManager.setPollutionManager(pollutionManager);
+	weatherManager.setGameManager(gameManager);
+	weatherManager.setMapSize(map_data.get("size", [16, 10]));
+	weatherManager.enabled = weather_enabled;
+	# M0: `BALACTORIO_WEATHER=aggressive` pone cada tirada al tope (MAX_CHANCE); ignorada en build
+	# exportada, como AUGUR_KEY.
+	weatherManager.aggressive = weatherManager.aggressiveFromEnv(
+		OS.has_feature("template"), OS.get_environment("BALACTORIO_WEATHER"));
+	if weatherManager.aggressive:
+		print("[Clima] modo agresivo: probabilidad %.2f en cada tirada" % weatherManager.MAX_CHANCE);
+	add_child(weatherManager);
+	# M2: la lluvia se aplica desde tick_passive(), que corre en el TileMap cada frame; se le
+	# inyecta como al pollutionManager en vez de buscarse en el árbol. La sequía no necesita
+	# inyección: las factorías lo preguntan a su padre (Main) por nombre.
+	get_node("TileMap").setWeatherManager(weatherManager);
+	# M5: el aviso del HUD. El gameManager lee los eventos vivos cada frame para el texto (como
+	# lee su propio `deadlock_timer`), y el FIN le llega por la señal porque cuando un evento
+	# termina ya no queda en `active` nada que leer. El tinte de la zona lo pinta el TileMap con
+	# el mismo manager que ya tiene inyectado arriba.
+	gameManager.setWeatherManager(weatherManager);
+	weatherManager.weather_ended.connect(gameManager._on_weather_ended);
+	# Y a la analítica, que hasta el 2026-10-01 no sabía del clima más que `blocked_storm`.
+	weatherManager.weather_started.connect(_on_weather_started);
+	weatherManager.weather_ended.connect(_on_weather_ended);
+
+func _on_deadlock_opened():
+	if _run_tracked():
+		analytics.track("deadlock_opened", {"checkpoint": int(gameManager.current_checkpoint_index)});
+
+func _on_deadlock_closed(secs, lost):
+	if _run_tracked():
+		analytics.track("deadlock_closed", {"secs": float(secs), "outcome": "lost" if lost else "recovered"});
+
+# El clima en Augur. `weather_started` sale DESPUÉS de meter el evento en `active`, así que su tamaño
+# ya lo cuenta. Restaurar una run no emite `weather_started` (weatherManager.restore()), así que un
+# clima que venía de la run suspendida solo deja aquí su fin.
+func _on_weather_started(id, rect):
+	if not _run_tracked():
+		return;
+	analytics.track("weather_started", {
+		"weather": String(id),
+		"x": int(rect.position.x), "y": int(rect.position.y),
+		"w": int(rect.size.x), "h": int(rect.size.y),
+		"duration": float(weatherManager.catalog.get(id, {}).get("duration", 0.0)),
+		"chance": float(weatherManager.rollChance()),
+		"n_active": int(weatherManager.active.size()),
+	});
+
+# `weather_ended` sale DENTRO de la pasada de advance(), antes de que `active` pierda los que
+# terminan: los vivos son los que aún tienen tiempo, no el tamaño del array.
+func _on_weather_ended(id):
+	if not _run_tracked():
+		return;
+	var vivos = 0;
+	for ev in weatherManager.active:
+		if ev.remaining > 0.0:
+			vivos += 1;
+	analytics.track("weather_ended", {"weather": String(id), "n_active": vivos});
 
 func _process(delta):
 	if not fileData or not gameManager:
@@ -190,6 +494,20 @@ func _tick_world(tile_map, delta):
 	# suciedad antes de comprobar quién ha quedado limpio deja una casilla `toxic` sin
 	# desbloquear para siempre, que es la razón entera de que este orden esté escrito.
 	tile_map.tick_contagion(pollutionManager, delta);
+	_tick_autosave(delta);
+
+# El autoguardado (M4), aparte para que _tick_world() siga leyéndose como el orden del mundo. Con
+# el árbol pausado _process() no llama aquí, pero se pregunta igual con can_process(): así la
+# regla vale también para quien llame a _tick_world() a mano —la suite— y un Main fuera del árbol
+# (los de prueba sueltos) no escribe nunca. Al cumplirse se vuelve a 0 en vez de restar: un
+# frame enorme no debe disparar dos guardados seguidos de la misma run.
+func _tick_autosave(delta):
+	if not is_inside_tree() or not can_process():
+		return;
+	_autosave_t += delta;
+	if _autosave_t >= AUTOSAVE_INTERVAL:
+		_autosave_t = 0.0;
+		_save_run();
 
 func _buildResourceText(bag):
 	var text = "";
@@ -225,6 +543,12 @@ func _buildResourceText(bag):
 
 func _unhandled_input(event):
 	if event is InputEventKey and event.pressed and event.keycode == KEY_R:
+		# Solo con una run montada (enmienda M4): en el menú, sin run, reset() borraría la run
+		# guardada que «Continuar» ofrece al lado. Tras ganar o perder sí reinicia, como el botón
+		# del resumen; su `run_end` ya salió y `_end_run()` no repite.
+		if not gameManager:
+			return;
+		_end_run("abandon");
 		reset();
 		return;
 	var tile_map = get_node_or_null("TileMap");
@@ -260,8 +584,9 @@ func _unhandled_input(event):
 				# ni se cobra nada. La regla de todo o nada vale igual para el mapa y para el
 				# dinero — media cinta pagada no transporta nada.
 				if beltNetwork:
-					beltNetwork.place_drag(
-						start, cell, factoryArray, get_node_or_null("Player/Bag"), true);
+					var drag_bag = get_node_or_null("Player/Bag");
+					var tendidas = beltNetwork.place_drag(start, cell, factoryArray, drag_bag, true);
+					_track_belt_drag(start, cell, tendidas, drag_bag);
 				return;
 			# El izquierdo gestiona lo que ya hay y construye donde no hay nada. La casilla
 			# ocupada no pasa el filtro de colocación de abajo —canPlaceFactory() incluye el
@@ -279,6 +604,7 @@ func _unhandled_input(event):
 			# radial, que solo ofrece lo que entra en ESTA casilla, y lo revalida
 			# _on_factory_chosen() con el tipo elegido.
 			if not tile_map.canPlaceAnyFactory(cell, factoryArray):
+				_track_click_rejected(tile_map, cell);
 				return;
 			_show_radial_menu(cell);
 		if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
@@ -286,13 +612,51 @@ func _unhandled_input(event):
 			# factoría sigue demoliendo. Las dos cosas no coinciden nunca en una casilla:
 			# canPlaceFactory() impide tender sobre una factoría y construir sobre una cinta.
 			if beltNetwork and beltNetwork.remove_belt(cell):
+				if _run_tracked():
+					analytics.track("belt_removed", {"cx": int(cell.x), "cy": int(cell.y)});
 				return;
 			_demolish_at_cell(cell);
+
+# Analítica M3: el arrastre de cinta, tendido o rechazado. `tendidas` es lo que devolvió
+# `place_drag()`: con celdas, `belt_placed` con lo que se cobró; vacío, `belt_rejected`, y el
+# porqué se averigua preguntando lo mismo SIN dinero: si así sí cabía, lo que faltó fue madera
+# (`no_money`); si tampoco, el trazado (`no_fit`). En el rechazo `cells` es el largo del gesto
+# (manhattan + 1): no hay tramo tendido que contar.
+func _track_belt_drag(start, end, tendidas, bag):
+	if not _run_tracked():
+		return;
+	if not tendidas.is_empty():
+		var paid = beltNetwork.belt_cost_for(tendidas.size()) if bag != null else {};
+		analytics.track("belt_placed", {"x0": int(start.x), "y0": int(start.y),
+			"x1": int(end.x), "y1": int(end.y), "cells": int(tendidas.size()),
+			"paid_wood": int(paid.get("wood", 0))});
+		return;
+	var cabia = beltNetwork.can_place_drag(start, end, factoryArray, null, false);
+	analytics.track("belt_rejected", {"reason": "no_money" if cabia else "no_fit",
+		"cells": int(absi(end.x - start.x) + absi(end.y - start.y) + 1)});
+
+# Analítica M3: click sobre casilla del mapa donde no cabe ninguna factoría. Fuera del mapa
+# (sin tile en la capa de suelo) no hay casilla que contar y no se manda.
+func _track_click_rejected(tile_map, cell):
+	if not _run_tracked() or tile_map.get_cell_source_id(0, cell) == -1:
+		return;
+	var saturated = false;
+	if pollutionManager:
+		saturated = float(pollutionManager.pollution_per_cell.get(cell, 0.0)) \
+			>= float(pollutionManager.cell_block_pollution);
+	analytics.track("click_rejected", {"cx": int(cell.x), "cy": int(cell.y),
+		"tile": _tile_id(tile_map, cell), "saturated": saturated});
+
+# El tipo de casilla para la analítica: el suelo normal no está en `cell_types` y es "plain".
+func _tile_id(tile_map, cell) -> String:
+	var t = tile_map.getCellType(cell);
+	return t if t != "" else "plain";
 
 func _demolish_at_cell(cell):
 	var fab = _get_factory_at_cell(cell);
 	if fab == null:
 		return;
+	var refunded = {};
 	# Devolver workers a la bolsa
 	var bag = get_node_or_null("Player/Bag");
 	if bag and fab.workers_assigned > 0:
@@ -308,6 +672,7 @@ func _demolish_at_cell(cell):
 	# frame, que es lo que hace de demoler una salida real cuando la bolsa se atasca.
 	if bag and placer:
 		var refund = placer.getRefund(fab);
+		refunded = refund;
 		for material in refund:
 			bag.addToBag(material, refund[material]);
 	factoryArray.erase(fab);
@@ -327,6 +692,15 @@ func _demolish_at_cell(cell):
 	# deja de estar: se invalida entera, que es más barato que razonar qué entradas sobreviven.
 	if beltNetwork:
 		beltNetwork.invalidate_factory_index();
+	# Analítica M3. La edad sale del `run_time` que `_on_factory_chosen()` apuntó al construir; lo
+	# que no pasó por ahí (el almacén inicial del mapa) nació con la run, en 0.
+	if _run_tracked():
+		var props = {"factory": String(fab.type), "cx": int(cell.x), "cy": int(cell.y),
+			"age_s": max(0.0, float(gameManager.run_time) - float(fab.get_meta("built_run_t", 0.0)))
+				if gameManager else 0.0};
+		for material in refunded:
+			props["refund_" + String(material)] = int(refunded[material]);
+		analytics.track("factory_demolished", props);
 	fab.queue_free();
 
 func _show_radial_menu(cell):
@@ -380,6 +754,18 @@ func _show_radial_menu(cell):
 	radial.initialize(opciones, fileData, cell, get_viewport().get_mouse_position(),
 		preview, asequibles);
 	radial.factory_chosen.connect(_on_factory_chosen);
+	# Analítica M3: el cierre, construyendo o no, con cuántas opciones había y cuántas se podían
+	# pagar. El radial no conoce la analítica: emite `closed(built)` una vez y Main lo traduce.
+	var n_affordable = 0;
+	for tipo in asequibles:
+		if asequibles[tipo]:
+			n_affordable += 1;
+	radial.closed.connect(_on_radial_closed.bind(cell, opciones.size(), n_affordable));
+
+func _on_radial_closed(built, cell, n_options, n_affordable):
+	if _run_tracked():
+		analytics.track("radial_closed", {"cx": int(cell.x), "cy": int(cell.y), "built": bool(built),
+			"n_options": int(n_options), "n_affordable": int(n_affordable)});
 
 # La CATEGORÍA de una factoría (`type` del JSON), que es lo que `tileMap.canPlaceFactory()`
 # necesita desde Costes M7. Vive aquí, en una función y no repetida en cada llamada, porque
@@ -403,12 +789,14 @@ func _on_factory_chosen(factory_type, cell):
 	# cualquier otro camino que llame aquí.
 	if not tile_map.canPlaceFactory(cell, factoryArray, _factory_kind(factory_type),
 			str(factory_type)):
+		_track_build_rejected(factory_type, "cell_invalid");
 		return;
 	# Y se revalida el dinero por la misma razón que la colocación: entre abrir el radial y
 	# elegir, una factoría pudo comerse el insumo o el checkpoint en curso pudo apartar más de
 	# lo que había. canAfford() mira el EXCEDENTE (getAvailable()), nunca el total: lo
 	# reservado para el peaje no se puede gastar en construir.
 	if not placer.canAfford(factory_type, bag):
+		_track_build_rejected(factory_type, "no_money");
 		return;
 	var fabrica = placer.build(factory_type, cell, get_node("Player"), bag, tile_map, true);
 	# `true` es lo que hace que esta llamada —y solo esta— cobre: build() descuenta dentro. Si
@@ -416,9 +804,11 @@ func _on_factory_chosen(factory_type, cell):
 	# factoría que añadir: los dos rechazos son el mismo y tener ambos es lo que deja imposible
 	# colocar una factoría a medio pagar.
 	if fabrica == null:
+		_track_build_rejected(factory_type, "no_money");
 		return;
 	add_child(fabrica);
 	placer.register_and_evaluate(fabrica, cell);
+	_track_factory_built(fabrica, cell, tile_map);
 	if beltNetwork:
 		beltNetwork.invalidate_factory_index();
 		# La factoría nueva puede ser el destino que le faltaba al final de una cinta ya
@@ -439,7 +829,36 @@ func _on_factory_chosen(factory_type, cell):
 		# Ruinas: ofrecer mejora gratuita
 		if tdef.has("on_build_reward") and tdef["on_build_reward"].get("upgrades", 0) > 0:
 			tile_map.cell_types.erase(cell); # consumir la ruina
-			_on_checkpoint_reached(gameManager._pick_upgrades(1), {});
+			_on_checkpoint_reached(gameManager._pick_upgrades(1), {}, [], "ruins");
+
+# Analítica M3: los rechazos de `_on_factory_chosen()`. El tercero (`build()` devolvió null) es el
+# mismo rechazo por dinero que el segundo, y cuenta como tal.
+func _track_build_rejected(factory_type, reason):
+	if _run_tracked():
+		analytics.track("build_rejected", {"factory": String(factory_type), "reason": reason});
+
+# Analítica M3: la factoría recién registrada, con la casilla (ANTES de que las ruinas se
+# consuman), lo pagado de verdad (`cost_paid`, el recibo) y cuántas vecinas comparten sinergia
+# con ella en cualquiera de los dos sentidos. Apunta además en el nodo el `run_time` de
+# construcción, del que `_demolish_at_cell()` saca `age_s`.
+func _track_factory_built(fabrica, cell, tile_map):
+	if not _run_tracked():
+		return;
+	fabrica.set_meta("built_run_t", float(gameManager.run_time) if gameManager else 0.0);
+	var factories = fileData.get("Factories", {});
+	var own = factories.get(fabrica.type, {}).get("synergies", {});
+	var n_synergies = 0;
+	for offset in placer.NEIGHBOR_OFFSETS:
+		var neighbor = _get_factory_at_cell(cell + offset);
+		if neighbor == null or neighbor == fabrica:
+			continue;
+		if own.has(neighbor.type) or factories.get(neighbor.type, {}).get("synergies", {}).has(fabrica.type):
+			n_synergies += 1;
+	var props = {"factory": String(fabrica.type), "cx": int(cell.x), "cy": int(cell.y),
+		"tile": _tile_id(tile_map, cell), "n_synergies": n_synergies};
+	for material in fabrica.cost_paid:
+		props["paid_" + String(material)] = int(fabrica.cost_paid[material]);
+	analytics.track("factory_built", props);
 
 # `source` es la factoría que produjo, atada en la conexión de la señal (ver _on_factory_chosen).
 # Queda con default porque la señal en sí solo lleva tres argumentos y hay quien la conecta sin
@@ -591,6 +1010,8 @@ func _check_toxic_unlock(tile_map):
 				# Ya restaurada: vuelve a ser suelo normal y construible. El repintado lo
 				# hace el tilemap, que es quien sabe qué tinte le había puesto al degradarla.
 				tile_map.restoreCell(cell);
+				if _run_tracked():
+					analytics.track("cell_restored", {"cx": int(cell.x), "cy": int(cell.y)});
 
 func _show_factory_token_screen():
 	var existing = get_node_or_null("TokenUnlock");
@@ -623,10 +1044,15 @@ func _show_factory_token_screen():
 			"type": "unlock_factory",
 			"factory": f
 		};
-	screen.initialize(synthetic_catalog.keys().slice(0, 3), synthetic_catalog);
+	var offered = synthetic_catalog.keys().slice(0, 3);
+	screen.initialize(offered, synthetic_catalog);
 	screen.upgrade_chosen.connect(_on_token_unlock_chosen);
+	_remember_offer(offered, "token");
+	if analytics:
+		analytics.track("ui_open", {"screen": "token"});
 
 func _on_token_unlock_chosen(upgrade_id):
+	_track_offer(upgrade_id);
 	get_tree().paused = false;
 	var parts = upgrade_id.split("token_unlock_");
 	if parts.size() >= 2:
@@ -667,6 +1093,31 @@ func _show_factory_panel(factory_node):
 	var refund = placer.getRefund(factory_node) if placer else {};
 	panel.initialize(factory_node, fileData, get_viewport().get_mouse_position(),
 		get_node_or_null("Player/Bag"), beltNetwork, refund);
+	# Analítica M3: se abre el panel, con la razón de parada que ENSEÑA (`blockedReason`, que ya
+	# descarta el `workers` caducado), y sus tres acciones, que el panel emite solo si se aplican.
+	panel.workers_changed.connect(_on_panel_workers_changed.bind(factory_node));
+	panel.material_selected.connect(_on_panel_material_selected.bind(factory_node));
+	panel.belt_filter_set.connect(_on_panel_belt_filter_set);
+	if _run_tracked():
+		var reason = BLOCKED_REASON.reason_now(factory_node);
+		var cp = factory_node.cell_position;
+		analytics.track("panel_opened", {"factory": String(factory_node.type), "cx": int(cp.x),
+			"cy": int(cp.y), "blocked": reason if reason != "" else "none"});
+
+func _on_panel_workers_changed(delta, factory_node):
+	if _run_tracked() and is_instance_valid(factory_node):
+		analytics.track("workers_changed", {"factory": String(factory_node.type), "delta": int(delta),
+			"assigned": int(factory_node.workers_assigned)});
+
+func _on_panel_material_selected(material, factory_node):
+	if _run_tracked() and is_instance_valid(factory_node) and material != null:
+		analytics.track("material_selected", {"factory": String(factory_node.type),
+			"material": String(material)});
+
+func _on_panel_belt_filter_set(cell, material):
+	if _run_tracked():
+		analytics.track("belt_filter_set", {"cx": int(cell.x), "cy": int(cell.y),
+			"material": String(material) if String(material) != "" else "any"});
 
 func _hide_factory_panel():
 	var panel = get_node_or_null("FactoryPanel");
@@ -781,9 +1232,25 @@ func _close_menus():
 	_hovered_factory = null;
 
 # `granted_upgrade_ids` tiene valor por defecto porque la mejora gratis de las ruinas llama
-# aquí a mano, con dos argumentos, y ahí no se concede nada: lo que las ruinas dan ya es una
-# carta regalada.
-func _on_checkpoint_reached(offered_upgrade_ids, rewards, granted_upgrade_ids = []):
+# aquí a mano, y ahí no se concede nada: lo que las ruinas dan ya es una carta regalada.
+# `source` (M2 de «Analítica de Runs») es de dónde sale la oferta para `card_offered`: la señal
+# del gameManager no lo lleva y vale "checkpoint"; las ruinas pasan "ruins". Solo un checkpoint
+# de verdad emite `checkpoint_reached`.
+func _on_checkpoint_reached(offered_upgrade_ids, rewards, granted_upgrade_ids = [], source = "checkpoint"):
+	if source == "checkpoint" and _run_tracked() and gameManager:
+		var closed_t = float(gameManager.last_checkpoint_time);
+		var cp_props = {
+			"checkpoint": int(gameManager.current_checkpoint_index),
+			"seg_t": max(0.0, closed_t - _prev_checkpoint_t),
+			"tier": int(gameManager.last_tier),
+		};
+		# Sin integral en el tramo el cociente vale el −1.0 centinela, que falsearía cualquier
+		# `avg`: entonces `rate` no se manda (enmienda tras M2, hecha en M3).
+		var rate = float(gameManager.last_segment_rate);
+		if rate >= 0.0:
+			cp_props["rate"] = rate;
+		analytics.track("checkpoint_reached", cp_props);
+		_prev_checkpoint_t = closed_t;
 	_close_menus();
 	var bag = get_node("Player").get_node("Bag");
 	if rewards.get("workers", 0) > 0:
@@ -791,12 +1258,54 @@ func _on_checkpoint_reached(offered_upgrade_ids, rewards, granted_upgrade_ids = 
 	# Las concedidas se aplican ANTES de montar la pantalla: la garantía no puede depender de
 	# que el jugador pulse nada, que es justo lo que fallaba cuando se ofrecían entre las tres.
 	_apply_granted_upgrades(granted_upgrade_ids);
+	_show_upgrade_offer(offered_upgrade_ids, source, granted_upgrade_ids);
+
+# Monta la pantalla de cartas con una oferta YA decidida: pausa el árbol, la conecta a
+# _on_upgrade_chosen() y la apunta para `card_offered`. Vive aparte de _on_checkpoint_reached()
+# desde Serialización M2 porque la reanudación reabre la oferta guardada TAL CUAL —mismos ids,
+# sin re-barajar— y sin repetir nada de lo que hizo el checkpoint: ni la analítica del tramo,
+# ni las recompensas, ni las concedidas, que ya están aplicadas. Por eso al reanudar
+# `granted` llega vacío: la pantalla no vuelve a anunciar una carta que el snapshot no guarda.
+func _show_upgrade_offer(offered_upgrade_ids, source, granted_upgrade_ids = []):
 	get_tree().paused = true;
 	var screen = load("res://ui/upgradeScreen.gd").new();
 	screen.name = "UpgradeScreen";
 	add_child(screen);
 	screen.initialize(offered_upgrade_ids, fileData["Upgrades"], granted_upgrade_ids);
 	screen.upgrade_chosen.connect(_on_upgrade_chosen);
+	_remember_offer(offered_upgrade_ids, source);
+	if analytics:
+		analytics.track("ui_open", {"screen": "upgrade"});
+
+# La oferta que hay en pantalla, para mandarla al elegir (M2): una fila de `card_offered` por carta
+# mostrada, en su orden (`slot` 1..N) y con los milisegundos de reloj que tardó la decisión. El
+# checkpoint se toma al montarla: son los cerrados hasta ese momento.
+func _remember_offer(offered_ids, source):
+	_offer_ids = Array(offered_ids).duplicate();
+	_offer_source = source;
+	_offer_checkpoint = int(gameManager.current_checkpoint_index) if gameManager else 0;
+	_offer_ms = Time.get_ticks_msec();
+
+func _track_offer(chosen_id):
+	var ids = _offer_ids;
+	_offer_ids = [];
+	if not _run_tracked():
+		return;
+	var decision_ms = int(Time.get_ticks_msec() - _offer_ms);
+	for i in range(ids.size()):
+		var props = {
+			"card": String(ids[i]),
+			"slot": i + 1,
+			"chosen": 1 if ids[i] == chosen_id else 0,
+			"source": _offer_source,
+			"checkpoint": _offer_checkpoint,
+			"decision_ms": decision_ms,
+		};
+		# El tier es el de la carta (el `tier` de Upgrades); las sintéticas del token no tienen.
+		var upgrade = fileData["Upgrades"].get(ids[i], {}) if fileData else {};
+		if upgrade.has("tier"):
+			props["tier"] = int(upgrade["tier"]);
+		analytics.track("card_offered", props);
 
 # Las mejoras que la run recibe sin elegirlas. Vive aparte de _on_checkpoint_reached() para
 # que se le pueda dar la lista sin montar la escena entera: lo que hay que poder afirmar es
@@ -804,8 +1313,12 @@ func _on_checkpoint_reached(offered_upgrade_ids, rewards, granted_upgrade_ids = 
 func _apply_granted_upgrades(granted_upgrade_ids):
 	for id in granted_upgrade_ids:
 		_apply_upgrade(id);
+		if _run_tracked():
+			analytics.track("card_granted", {"card": String(id),
+				"checkpoint": int(gameManager.current_checkpoint_index) if gameManager else 0});
 
 func _on_upgrade_chosen(upgrade_id):
+	_track_offer(upgrade_id);
 	_apply_upgrade(upgrade_id);
 	get_tree().paused = false;
 	gameManager.resume_after_upgrade();
@@ -886,6 +1399,9 @@ func _degradable_cells(tile_map):
 	return cells;
 
 func _on_run_won(stats):
+	_end_run("win");
+	# Una run terminada no se reanuda. Solo run.json: save.json es del saveManager, justo abajo.
+	runSave.clear();
 	_close_menus();
 	stats["factories_placed"] = factoryArray.size();
 	# Guardar progresión
@@ -904,10 +1420,13 @@ func _on_run_won(stats):
 	add_child(summary);
 	summary.initialize(stats, true);
 	summary.restart_pressed.connect(reset);
+	if analytics:
+		analytics.track("ui_open", {"screen": "run_summary"});
 
 # Espejo de _on_run_won(), con una asimetría deliberada: perder NO registra progresión. Ver
 # _close_lost_run() — lo único que se queda aquí es pausar, que es lo que necesita el árbol.
 func _on_run_lost(stats):
+	_end_run("lose");
 	get_tree().paused = true;
 	_close_lost_run(stats);
 
@@ -917,6 +1436,9 @@ func _on_run_lost(stats):
 # pantalla se dibuje.
 func _close_lost_run(stats):
 	_close_menus();
+	# Perder tampoco deja run que reanudar —si no, cerrar y continuar desharía la derrota—. Borra
+	# run.json y SOLO ese: save.json no se toca al perder (ver abajo).
+	runSave.clear();
 	# gameManager lo emite a 0 —no lleva la cuenta de lo construido—, igual que en la victoria.
 	stats["factories_placed"] = factoryArray.size();
 	# Aquí NO va el bloque de saveManager de _on_run_won(): perder no incrementa
@@ -930,10 +1452,14 @@ func _close_lost_run(stats):
 	add_child(summary);
 	summary.initialize(stats, false);
 	summary.restart_pressed.connect(reset);
+	if analytics:
+		analytics.track("ui_open", {"screen": "run_summary"});
 
 func reset():
+	# Reiniciar abandona la run: su save se va con ella.
+	runSave.clear();
 	get_tree().paused = false;
-	for node_name in ["UpgradeScreen", "RunSummary", "TokenUnlock", "Player", "TileMap", "GameManager", "PollutionManager", "BeltNetwork"]:
+	for node_name in ["UpgradeScreen", "RunSummary", "TokenUnlock", "Player", "TileMap", "GameManager", "PollutionManager", "BeltNetwork", "WeatherManager"]:
 		var node = get_node_or_null(node_name);
 		if node:
 			node.queue_free();
@@ -944,8 +1470,249 @@ func reset():
 	gameManager = null;
 	placer = null;
 	beltNetwork = null;
+	weatherManager = null;
 	_drag_start_cell = null;
 	_hovered_factory = null;
 	_hide_factory_panel();
 	_hide_factory_tooltip();
 	_show_package_select();
+
+# ---------- Serialización de Run (M4): cuándo se guarda ----------
+
+# ¿Hay una run que merezca reanudarse? Montada (gameManager vivo, con su Player y su TileMap) y
+# sin resumen en pantalla: una run ganada o perdida ya terminó, y guardarla permitiría deshacer
+# la derrota cerrando el juego. La oferta de cartas abierta SÍ cuenta como viva: el snapshot la
+# lleva en `pending_offer`.
+func _run_alive() -> bool:
+	if gameManager == null or not is_instance_valid(gameManager) or pollutionManager == null:
+		return false;
+	if get_node_or_null("Player") == null or get_node_or_null("TileMap") == null:
+		return false;
+	var summary = get_node_or_null("RunSummary");
+	return summary == null or summary.is_queued_for_deletion();
+
+# Escribe la run en curso. Sin run viva no escribe NADA —ni borra—: el fichero que hubiera es
+# de una run anterior y lo gestiona su propio ciclo (ganar, perder, reiniciar, continuar).
+# Devuelve si quedó escrita, que es lo que decide `suspend` o `abandon` al cerrar.
+func _save_run() -> bool:
+	if not _run_alive():
+		return false;
+	return runSave.write(_capture_run());
+
+# Cerrar la ventana SIN Augur: no hay `closing`, así que el guardado va aquí. Con Augur también
+# llega (después de `_on_app_closing()`, porque el autoload la recibe antes) y vuelve a escribir
+# lo mismo: inofensivo. NO cierra la analítica: sin Augur su `track()` no manda nada.
+func _notification(what):
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_save_run();
+
+# Cerrar la ventana CON Augur (atado a `Augur.closing` en _configure_augur()): se guarda primero y
+# la run se cierra como `suspend` si quedó en disco, o `abandon` si no se pudo escribir. Sin run
+# viva `end_run()` no manda nada.
+func _on_app_closing():
+	if analytics:
+		analytics.end_run("suspend" if _save_run() else "abandon");
+	else:
+		_save_run();
+
+# ---------- Serialización de Run (M1): la captura ----------
+
+# La run en curso como un Dictionary de tipos JSON puros —ni un Vector2i, ni un nodo, ni un
+# Object—: cada objeto vivo sabe qué es suyo (su `snapshot()`) y Main solo compone, más lo que
+# solo Main sabe: el mapa y el paquete elegidos, el diff del mapa y la oferta de cartas abierta.
+# Presupone run viva; decidir si la hay es cosa de quien guarda (M4).
+func _capture_run() -> Dictionary:
+	var fabricas = [];
+	for fab in factoryArray:
+		if is_instance_valid(fab):
+			fabricas.append(fab.snapshot());
+	var player_node = get_node("Player");
+	return {
+		"version": RunSave.VERSION,
+		"params_hash": _params_hash,
+		"map_id": _run_map_id,
+		"package_id": _run_package_id,
+		"prev_checkpoint_t": float(_prev_checkpoint_t),
+		# El `run_id` de ESTA run: la que se reanude abrirá uno nuevo y lo citará (M4).
+		"resumed_from": analytics.run_id() if analytics else "",
+		"cells": _capture_cells(get_node("TileMap")),
+		"bag": player_node.get_node("Bag").snapshot(),
+		"player": player_node.snapshot(),
+		"pollution": pollutionManager.snapshot(),
+		"game": gameManager.snapshot(),
+		"weather": weatherManager.snapshot() if weatherManager else null,
+		"belts": beltNetwork.snapshot() if beltNetwork else [],
+		"factories": fabricas,
+		"pending_offer": _capture_pending_offer(),
+	};
+
+# El DIFF entre los tipos de casilla de ahora y los que deja tileMap.generate() con el mapa del
+# JSON: un tipo nuevo o cambiado sale con su nombre, uno que ha desaparecido sale `null`. Hoy
+# solo hay tres mutaciones —`toxic` degradada por carta, `toxic` restaurada, ruina consumida— y
+# cada una se repite al reanudar con su función de verdad, que es la que repinta tinte y sprite.
+# La base se rehace leyendo `special_cells` igual que generate() rellena `cell_types`: todas, sin
+# filtrar por tipo, y la última gana si una celda se repitiera.
+func _capture_cells(tile_map) -> Dictionary:
+	var base = _base_cell_types(_map_data_by_id(_run_map_id));
+	var diff = {};
+	for cell in tile_map.cell_types:
+		var ahora = String(tile_map.cell_types[cell]);
+		if base.get(cell, null) != ahora:
+			diff[RunSave.cell_key(cell)] = ahora;
+	for cell in base:
+		if not tile_map.cell_types.has(cell):
+			diff[RunSave.cell_key(cell)] = null;
+	return diff;
+
+# La oferta de cartas que hay en pantalla, si la hay: se guarda TAL CUAL —reanudar no re-baraja—
+# y las concedidas no, porque ya están aplicadas al montarla. Los ids salen de `_offer_ids`, que
+# _remember_offer() escribe al montar cualquiera de las dos pantallas y _track_offer() vacía al
+# elegir. Una pantalla ya elegida sigue en el árbol hasta final de frame (queue_free()), por eso
+# se mira también `is_queued_for_deletion()`.
+func _capture_pending_offer():
+	for nombre in ["UpgradeScreen", "TokenUnlock"]:
+		var screen = get_node_or_null(nombre);
+		if screen != null and not screen.is_queued_for_deletion():
+			var ids = [];
+			for id in _offer_ids:
+				ids.append(String(id));
+			return {"source": String(_offer_source), "ids": ids};
+	return null;
+
+# La entrada de `Maps` del JSON con ese id, o {} si no está. Al reanudar es lo que sustituye a
+# pick_map(): el mapa no se elige, se busca.
+func _map_data_by_id(map_id) -> Dictionary:
+	for m in fileData.get("Maps", []):
+		if String(m.get("id", "")) == String(map_id):
+			return m;
+	return {};
+
+# Los tipos de casilla que tileMap.generate() deja con ese mapa, sin mutación ninguna: la base
+# contra la que se calcula el diff de `cells` y contra la que se reaplica. Todas las
+# `special_cells`, sin filtrar por tipo, y la última gana si una celda se repitiera —igual que
+# generate()—.
+func _base_cell_types(map_data: Dictionary) -> Dictionary:
+	var base = {};
+	for sc in map_data.get("special_cells", []):
+		base[Vector2i(int(sc["pos"][0]), int(sc["pos"][1]))] = String(sc["type"]);
+	return base;
+
+# ---------- Serialización de Run (M2): la restauración en memoria ----------
+
+# Reanuda una run desde su snapshot, sobre un Main sin run viva. El orden ES la decisión del
+# plan («restauración en dos fases»): build() re-DERIVA tick, output, workers y sinergias de lo
+# que hay ahora, así que primero se instancian las factorías y después se pisa todo con lo
+# guardado; la bolsa y los managers, los últimos, porque build() les ha tocado cosas (workers).
+# Devuelve false sin montar nada si el mapa del snapshot ya no existe en el JSON.
+func _continue_game(snap: Dictionary) -> bool:
+	# 2. El mapa se BUSCA por id, no se baraja: pick_map() devolvería otro.
+	var map_data = _map_data_by_id(snap.get("map_id", ""));
+	if map_data.is_empty():
+		push_warning("Main: el snapshot cita el mapa '%s', que no está en el JSON" % str(snap.get("map_id", "")));
+		return false;
+	# 1. Player + grid como una run nueva, SIN apply_package(): suma stock, workers y boosts, y
+	# todo eso ya está en la bolsa y el Player guardados.
+	_mount_player_and_grid();
+	var player_node = get_node("Player");
+	var bag = player_node.get_node("Bag");
+	var tile_map = get_node("TileMap");
+	# 3. El mismo cableado que una run nueva, pero SIN almacén: vuelve con las factorías.
+	_mount_run(map_data, false);
+	# 4. DESPUÉS de apply_map(), que acaba de repartir `pollution_start`: restore() lo pisa. Al
+	# revés, la suciedad de partida se sumaría a la guardada.
+	pollutionManager.restore(snap.get("pollution", {}));
+	# 5. Las mutaciones del mapa, con sus funciones de verdad (tinte, sprite).
+	_restore_cells(tile_map, snap.get("cells", {}), _base_cell_types(map_data));
+	# 6. Las factorías, en dos fases. build() SIN cobro —ya se pagaron— y con el Player y la
+	# bolsa recién montados; luego restore() pisa lo derivado. NUNCA register_and_evaluate() (las
+	# sinergias vienen guardadas y recalcularlas con el mapa a medio montar daría otras) ni los
+	# efectos on_build del tile (la suciedad del suelo quemado ya está en `pollution_per_cell` y
+	# la ruina ya está consumida en `cells`). Por eso no se pasa por _on_factory_chosen().
+	for d in snap.get("factories", []):
+		var cell = RunSave.parse_cell(String(d.get("cell", "0,0")));
+		var fab = placer.build(String(d.get("type", "")), cell, player_node, bag, tile_map);
+		if fab == null:
+			continue;
+		add_child(fab);
+		factoryArray.append(fab);
+		fab.restore(d);
+		# A mano para todas, almacén incluido: sin el bind(fab) la factoría produce al vacío
+		# (_on_resource_produced() necesita la celda de origen).
+		fab.resource_produced.connect(_on_resource_produced.bind(fab));
+	# 7. La red, con la cache de factorías invalidada (restore() lo hace).
+	beltNetwork.restore(snap.get("belts", []));
+	# 8. Los últimos: pisan lo que build() tocó —los workers que asignó por orden de llegada—.
+	player_node.restore(snap.get("player", {}));
+	bag.restore(snap.get("bag", {}));
+	gameManager.restore(snap.get("game", {}));
+	if weatherManager and snap.get("weather", null) is Dictionary:
+		weatherManager.restore(snap["weather"]);
+	# 9. Lo que solo Main sabe.
+	_run_package_id = String(snap.get("package_id", ""));
+	_run_map_id = String(map_data.get("id", ""));
+	_prev_checkpoint_t = float(snap.get("prev_checkpoint_t", 0.0));
+	_offer_ids = [];
+	# 10. Una run NUEVA para la analítica (`run_id` nuevo), enlazada con la guardada por
+	# `resumed_from`: aquella ya mandó su `run_end` con `suspend` al cerrarse (M4).
+	if analytics:
+		analytics.begin_run(gameManager, pollutionManager, bag, tile_map, factoryArray,
+			_run_package_id, _run_map_id, String(snap.get("resumed_from", "")));
+	# El HUD se pinta UNA vez aquí, antes de reabrir la oferta: con oferta pendiente el árbol se
+	# pausa en el paso 11 sin que _process() haya corrido ni un frame, y detrás de las cartas se
+	# veía el texto de relleno de Main.tscn («Objective: 2 wood») en vez de la run (visto con
+	# tools/ver_serializacion.gd, 2026-10-01).
+	_paint_hud(bag);
+	# 11. La oferta que estaba en pantalla, tal cual: mismas cartas, sin re-barajar. El token no
+	# guarda ids porque _show_factory_token_screen() no baraja: ofrece las tres primeras
+	# candidatas, y con el Player ya restaurado son las mismas.
+	var oferta = snap.get("pending_offer", null);
+	if oferta is Dictionary:
+		if String(oferta.get("source", "")) == "token":
+			_show_factory_token_screen();
+		else:
+			var ids = [];
+			for id in oferta.get("ids", []):
+				ids.append(String(id));
+			_show_upgrade_offer(ids, String(oferta.get("source", "checkpoint")));
+	# 12. El save se borra al cargarlo: reanudar no es rebobinar. Si el juego se cierra ahora, lo
+	# que vuelva a haber en disco lo escribirá el autoguardado de ESTA run (M4).
+	runSave.clear();
+	return true;
+
+# Los dos textos del HUD, los mismos que pinta _process() cada frame. Solo con ventana: sin ella
+# nadie los lee (Rendimiento M0b), y los Main de la suite no tienen los Label.
+func _paint_hud(bag):
+	if not render_enabled:
+		return;
+	var label = get_node_or_null("Label");
+	if label:
+		label.text = _buildResourceText(bag);
+	var objective = get_node_or_null("Objective");
+	if objective and gameManager:
+		objective.text = gameManager.getObjectiveText(bag, pollutionManager);
+
+# Lo que llamará el «CONTINUAR» del menú (M5): el fichero, si vale para este balance, y la run.
+# Un save inválido lo borra read_valid() y aquí solo se devuelve false.
+func _continue_from_file() -> bool:
+	var snap = runSave.read_valid(_params_hash);
+	if snap.is_empty():
+		return false;
+	return _continue_game(snap);
+
+# Reaplica el diff de `cells` sobre el mapa recién generado, con las tres mutaciones que el juego
+# sabe hacer y que no se pisan entre sí:
+#   · un tipo nuevo (hoy solo `toxic`, el downside de una carta) → degradeCell(), que tiñe;
+#   · `null` sobre una `ruins` → la ruina se consumió al construir encima: se borra el tipo y
+#     nada más, IGUAL que _on_factory_chosen() (el sprite de la ruina se quedaba);
+#   · `null` sobre cualquier otro tipo (hoy `toxic`, restaurada por _check_toxic_unlock()) →
+#     restoreCell(), que le quita tinte y sprite.
+func _restore_cells(tile_map, cells: Dictionary, base: Dictionary):
+	for key in cells:
+		var cell = RunSave.parse_cell(String(key));
+		var tipo = cells[key];
+		if tipo != null:
+			tile_map.degradeCell(cell, String(tipo));
+		elif base.get(cell, "") == "ruins":
+			tile_map.cell_types.erase(cell);
+		else:
+			tile_map.restoreCell(cell);

@@ -21,6 +21,13 @@ const REFUND_COLOR = Color(0.85, 0.82, 0.6);
 # detalle dicen la misma frase con el mismo color, y ese color es el del marcador del mapa.
 const BLOCKED = preload("res://ui/blockedReason.gd");
 
+# Las tres acciones del panel (Plan «Analítica de Runs», M3), emitidas SOLO cuando la acción se
+# aplica: un worker que no se pudo mover, un material que `setProduction()` no aceptó o un filtro
+# que ya era ése no son acciones. El panel no conoce la analítica: `Main` las traduce.
+signal workers_changed(delta);
+signal material_selected(material);
+signal belt_filter_set(cell, material);
+
 var _panel;
 # Dónde querría estar el panel (esquina superior izquierda, antes de recortar contra la pantalla).
 var _wanted_pos = Vector2.ZERO;
@@ -236,8 +243,9 @@ func _fill(vbox, factory_node, file_data):
 # `_fill()` y vive hasta que se cierra, repintando solo trozos sueltos ante eventos
 # (`_refresh_workers()` al pulsar un botón, `_refresh_belt_filter()` con `belt_network_changed`).
 # La razón de parada no tiene ningún evento al que engancharse: la escribe `factoryData.update()`
-# desde su Timer, sin señal, porque a 1.300 emisiones por frame una señal es coste sin beneficio
-# (el precedente de `pollution_changed`). Así que se mira por frame, que es el mismo criterio que
+# desde su Timer, sin señal, porque una señal por cambio costaría ~1.300 emisiones por frame con
+# el mapa saturado, coste sin beneficio (el mismo argumento por el que el PollutionManager no
+# emite nada al sumar o limpiar). Así que se mira por frame, que es el mismo criterio que
 # siguen el StatusOverlay del mapa y el tinte de casilla.
 #
 # Y se mira, pero solo se REPINTA cuando la razón cambia. Sin esa comparación el panel remediría
@@ -350,7 +358,10 @@ func _on_material_selected(index):
 	var candidates = _factory_node.production_candidates;
 	if index < 0 or index >= candidates.size():
 		return;
+	var before = _factory_node.production;
 	_factory_node.setProduction(candidates[index]);
+	if _factory_node.production != before and _factory_node.production == candidates[index]:
+		material_selected.emit(_factory_node.production);
 	# Se vuelve a marcar lo que la factoría produce DE VERDAD: si `setProduction()` hubiera
 	# rechazado el candidato, el desplegable se quedaría enseñando una mentira.
 	_material_option.select(candidates.find(_factory_node.production));
@@ -450,7 +461,8 @@ func _on_belt_filter_selected(index):
 		return;
 	# El 0 es «Todo»: el filtro vuelve a "" y la cinta acepta cualquier cosa otra vez.
 	var material = "" if index <= 0 else _belt_option.get_item_text(index);
-	_belt_network.set_belt_filter(_belt_cell, material);
+	if _belt_network.set_belt_filter(_belt_cell, material):
+		belt_filter_set.emit(_belt_cell, material);
 	# set_belt_filter() emite `belt_network_changed` y eso ya nos repinta, pero solo si de
 	# verdad ha cambiado algo: se repinta aquí también para no depender de ese detalle.
 	_refresh_belt_filter();
@@ -548,6 +560,7 @@ func assign_one():
 		return false;
 	_bag.assignWorkers(1);
 	_factory_node.workers_assigned += 1;
+	workers_changed.emit(1);
 	return true;
 
 # Devuelve UN worker a la bolsa. Si con eso la factoría baja de `workers_needed`, deja de producir
@@ -560,6 +573,7 @@ func unassign_one():
 		return false;
 	_bag.unassignWorkers(1);
 	_factory_node.workers_assigned -= 1;
+	workers_changed.emit(-1);
 	return true;
 
 func _on_assign_pressed():
